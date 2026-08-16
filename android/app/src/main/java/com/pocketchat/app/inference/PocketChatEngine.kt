@@ -1,9 +1,10 @@
 package com.pocketchat.app.inference
 
 /**
- * Raw JNI surface over core/inference/pocketchat_inference.h. Model/context
- * handles are opaque native pointers boxed as [Long] — use [PocketChatModel]
- * and [PocketChatContext] instead of calling this directly.
+ * Raw JNI surface over core/inference/pocketchat_inference.h and
+ * core/memory/pocketchat_memory.h. Model/context handles are opaque native
+ * pointers boxed as [Long] — use [PocketChatModel], [PocketChatContext], and
+ * [PocketChatMemory] instead of calling this directly.
  */
 internal object PocketChatEngine {
 
@@ -41,4 +42,17 @@ internal object PocketChatEngine {
     ): Int
 
     @JvmStatic external fun nativeLastError(): String
+
+    @JvmStatic external fun nativeMemoryBuildContext(memoryDir: String, maxSummaries: Int, maxChars: Int): String
+
+    @JvmStatic external fun nativeMemoryUpdateSession(
+        modelHandle: Long,
+        memoryDir: String,
+        roles: Array<String>,
+        contents: Array<String>,
+        nCtx: Int,
+        nThreads: Int,
+    ): Int
+
+    @JvmStatic external fun nativeMemoryLastError(): String
 }

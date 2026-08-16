@@ -6,7 +6,9 @@ import androidx.lifecycle.viewModelScope
 import com.pocketchat.app.inference.ChatMessage
 import com.pocketchat.app.inference.PocketChatContext
 import com.pocketchat.app.inference.PocketChatException
+import com.pocketchat.app.inference.PocketChatMemory
 import com.pocketchat.app.inference.PocketChatModel
+import com.pocketchat.app.models.MemoryStorage
 import com.pocketchat.app.models.ModelStorage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -14,6 +16,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+
+private const val MEMORY_UPDATE_EVERY_N_MESSAGES = 6
+private const val BASE_SYSTEM_PROMPT = "You are PocketChat, a helpful assistant."
 
 sealed interface ModelStatus {
     data object Loading : ModelStatus
@@ -27,6 +32,7 @@ data class ChatUiState(
     /** The in-progress assistant reply; empty when not generating. */
     val streamingResponse: String = "",
     val isGenerating: Boolean = false,
+    val isUpdatingMemory: Boolean = false,
     val error: String? = null,
 )
 
@@ -40,6 +46,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Path of the model currently loaded into [model]/[context], if any. */
     private var loadedModelPath: String? = null
+
+    /** Remembered profile/summaries, prepended as a system turn — not shown in the transcript. */
+    private var systemPrompt: String = BASE_SYSTEM_PROMPT
+
+    /** How many of [ChatUiState.messages] have already been folded into memory. */
+    private var lastMemoryUpdateIndex: Int = 0
 
     init {
         viewModelScope.launch(Dispatchers.IO) { loadModel() }
@@ -55,6 +67,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             model = loadedModel
             context = loadedContext
             loadedModelPath = modelFile.absolutePath
+            systemPrompt = buildSystemPrompt(app)
             _uiState.update { it.copy(modelStatus = ModelStatus.Ready) }
         } catch (e: Exception) {
             loadedModelPath = null
@@ -62,11 +75,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    private fun buildSystemPrompt(app: Application): String {
+        val remembered = PocketChatMemory.buildContext(MemoryStorage.memoryDir(app))
+        return if (remembered.isBlank()) BASE_SYSTEM_PROMPT else "$BASE_SYSTEM_PROMPT\n\n$remembered"
+    }
+
     /**
      * Call after returning from the model manager screen in case the active
-     * model changed there — a no-op if it didn't. Ignored mid-generation,
-     * since there's no sensible way to switch a model out from under a
-     * running generateChat() call.
+     * model changed there — a no-op if it didn't. Ignored mid-generation
+     * (guarded by the same isGenerating flag a memory update also holds —
+     * see sendMessage — so this can never close a model out from under a
+     * still-running pc_memory_update_session on it).
      */
     fun reloadModelIfChanged() {
         if (_uiState.value.isGenerating) return
@@ -79,6 +98,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             model?.close()
             context = null
             model = null
+            lastMemoryUpdateIndex = 0
             _uiState.update { ChatUiState(modelStatus = ModelStatus.Loading) }
             loadModel()
         }
@@ -100,18 +120,26 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val history = _uiState.value.messages
+                // The system turn carries remembered context but never appears in
+                // the displayed transcript (ChatUiState.messages) or gets counted
+                // towards a memory update — it's reconstructed fresh each call.
+                val history = listOf(ChatMessage("system", systemPrompt)) + _uiState.value.messages
                 val response = ctx.generateChat(history) { piece ->
                     _uiState.update { it.copy(streamingResponse = it.streamingResponse + piece) }
                     true
                 }
                 _uiState.update {
-                    it.copy(
-                        messages = it.messages + ChatMessage("assistant", response),
-                        streamingResponse = "",
-                        isGenerating = false,
-                    )
+                    it.copy(messages = it.messages + ChatMessage("assistant", response), streamingResponse = "")
                 }
+
+                // Runs inline (still under isGenerating) rather than as a detached
+                // background job: pc_memory_update_session() runs against the same
+                // PocketChatModel that reloadModelIfChanged() can close once
+                // isGenerating drops — keeping it inside this window is what makes
+                // that guard actually cover memory updates too, not just chat turns.
+                _uiState.update { it.copy(isUpdatingMemory = true) }
+                maybeUpdateMemory()
+                _uiState.update { it.copy(isUpdatingMemory = false, isGenerating = false) }
             } catch (e: Exception) {
                 // The native context's KV cache now holds whatever partial reply was
                 // streamed before the error, but `messages` never got that turn
@@ -120,9 +148,35 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 // into a fresh context rather than getting permanently stuck.
                 ctx.reset()
                 _uiState.update {
-                    it.copy(isGenerating = false, streamingResponse = "", error = e.message ?: "generation failed")
+                    it.copy(
+                        isGenerating = false,
+                        isUpdatingMemory = false,
+                        streamingResponse = "",
+                        error = e.message ?: "generation failed",
+                    )
                 }
             }
+        }
+    }
+
+    /**
+     * Runs a memory update (PLAN.md Phase 3: "every N turns") once enough new
+     * messages have accumulated since the last one, on its own scratch native
+     * context (see core/memory/) so it doesn't touch the main chat context.
+     * Failures are swallowed — a stale memory isn't worth surfacing an error
+     * over — and the next update will just cover a longer span.
+     */
+    private fun maybeUpdateMemory() {
+        val currentModel = model ?: return
+        val messages = _uiState.value.messages
+        if (messages.size - lastMemoryUpdateIndex < MEMORY_UPDATE_EVERY_N_MESSAGES) return
+
+        val unsummarized = messages.subList(lastMemoryUpdateIndex, messages.size).toList()
+        lastMemoryUpdateIndex = messages.size
+        try {
+            PocketChatMemory.updateSession(currentModel, MemoryStorage.memoryDir(getApplication()), unsummarized)
+        } catch (_: Exception) {
+            // Best-effort; see doc comment above.
         }
     }
 

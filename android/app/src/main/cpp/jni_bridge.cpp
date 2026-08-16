@@ -1,5 +1,5 @@
 // JNI glue between com.pocketchat.app.inference.PocketChatEngine (Kotlin) and
-// core/inference/pocketchat_inference.h (the shared C++ core). Kept as thin as
+// core/inference/ + core/memory/ (the shared C++ core). Kept as thin as
 // possible: marshal JVM types to/from the C API, no logic of its own.
 #include <jni.h>
 #include <android/log.h>
@@ -7,11 +7,57 @@
 #include <vector>
 
 #include "pocketchat_inference.h"
+#include "pocketchat_memory.h"
 
 #define LOG_TAG "PocketChatJNI"
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
 
 namespace {
+
+// Marshals parallel JVM String[] role/content arrays into pc_chat_message[],
+// keeping the underlying jstrings/UTF-8 copies alive for this object's
+// lifetime. Used by both nativeGenerateChat and nativeMemoryUpdateSession.
+class JniMessageArray {
+public:
+    JniMessageArray(JNIEnv * env, jobjectArray roles, jobjectArray contents) : env_(env) {
+        const jsize n = env->GetArrayLength(roles);
+        role_refs_.resize(n);
+        content_refs_.resize(n);
+        role_chars_.resize(n);
+        content_chars_.resize(n);
+        messages_.resize(n);
+        for (jsize i = 0; i < n; i++) {
+            role_refs_[i]    = (jstring) env->GetObjectArrayElement(roles, i);
+            content_refs_[i] = (jstring) env->GetObjectArrayElement(contents, i);
+            role_chars_[i]    = env->GetStringUTFChars(role_refs_[i], nullptr);
+            content_chars_[i] = env->GetStringUTFChars(content_refs_[i], nullptr);
+            messages_[i] = { role_chars_[i], content_chars_[i] };
+        }
+    }
+
+    ~JniMessageArray() {
+        for (size_t i = 0; i < messages_.size(); i++) {
+            env_->ReleaseStringUTFChars(role_refs_[i], role_chars_[i]);
+            env_->ReleaseStringUTFChars(content_refs_[i], content_chars_[i]);
+            env_->DeleteLocalRef(role_refs_[i]);
+            env_->DeleteLocalRef(content_refs_[i]);
+        }
+    }
+
+    JniMessageArray(const JniMessageArray &) = delete;
+    JniMessageArray & operator=(const JniMessageArray &) = delete;
+
+    const pc_chat_message * data() const { return messages_.data(); }
+    size_t size() const { return messages_.size(); }
+
+private:
+    JNIEnv                    * env_;
+    std::vector<jstring>        role_refs_;
+    std::vector<jstring>        content_refs_;
+    std::vector<const char *>   role_chars_;
+    std::vector<const char *>   content_chars_;
+    std::vector<pc_chat_message> messages_;
+};
 
 // Bridges pc_token_callback (C function pointer + void*) to a JVM
 // PocketChatEngine.TokenCallback instance. Valid only for the duration of a
@@ -105,21 +151,7 @@ Java_com_pocketchat_app_inference_PocketChatEngine_nativeGenerateChat(
         jfloat temp, jfloat top_p, jfloat min_p, jint top_k, jint n_predict, jlong seed,
         jobject callback) {
     auto * ctx = reinterpret_cast<pc_context *>(ctx_handle);
-    const jsize n_messages = env->GetArrayLength(roles);
-
-    // pc_chat_message only holds raw `const char *`, so the jstrings and their
-    // UTF-8 copies must stay alive for the whole call.
-    std::vector<jstring>            role_refs(n_messages), content_refs(n_messages);
-    std::vector<const char *>       role_chars(n_messages), content_chars(n_messages);
-    std::vector<pc_chat_message>    messages(n_messages);
-
-    for (jsize i = 0; i < n_messages; i++) {
-        role_refs[i]    = (jstring) env->GetObjectArrayElement(roles, i);
-        content_refs[i] = (jstring) env->GetObjectArrayElement(contents, i);
-        role_chars[i]    = env->GetStringUTFChars(role_refs[i], nullptr);
-        content_chars[i] = env->GetStringUTFChars(content_refs[i], nullptr);
-        messages[i] = { role_chars[i], content_chars[i] };
-    }
+    JniMessageArray msgs(env, roles, contents);
 
     pc_sampling_params sampling;
     sampling.temp      = temp;
@@ -133,26 +165,59 @@ Java_com_pocketchat_app_inference_PocketChatEngine_nativeGenerateChat(
     const jmethodID method         = env->GetMethodID(callback_class, "onToken", "(Ljava/lang/String;)Z");
 
     JniCallback jni_cb{ env, callback, method };
-    const int rc = pc_generate_chat(ctx, messages.data(), (size_t) n_messages, sampling,
-                                     jni_token_callback, &jni_cb);
+    const int rc = pc_generate_chat(ctx, msgs.data(), msgs.size(), sampling, jni_token_callback, &jni_cb);
     if (rc != 0) {
         LOGW("nativeGenerateChat failed: %s", pc_last_error());
     }
 
-    for (jsize i = 0; i < n_messages; i++) {
-        env->ReleaseStringUTFChars(role_refs[i], role_chars[i]);
-        env->ReleaseStringUTFChars(content_refs[i], content_chars[i]);
-        env->DeleteLocalRef(role_refs[i]);
-        env->DeleteLocalRef(content_refs[i]);
-    }
     env->DeleteLocalRef(callback_class);
-
     return rc;
 }
 
 JNIEXPORT jstring JNICALL
 Java_com_pocketchat_app_inference_PocketChatEngine_nativeLastError(JNIEnv * env, jclass) {
     return env->NewStringUTF(pc_last_error());
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_pocketchat_app_inference_PocketChatEngine_nativeMemoryBuildContext(
+        JNIEnv * env, jclass, jstring j_memory_dir, jint max_summaries, jint max_chars) {
+    const char * memory_dir = env->GetStringUTFChars(j_memory_dir, nullptr);
+    char * result = pc_memory_build_context(memory_dir, max_summaries, (size_t) max_chars);
+    env->ReleaseStringUTFChars(j_memory_dir, memory_dir);
+
+    if (!result) {
+        LOGW("nativeMemoryBuildContext failed: %s", pc_memory_last_error());
+        return env->NewStringUTF("");
+    }
+    const jstring out = env->NewStringUTF(result);
+    pc_memory_free_string(result);
+    return out;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_pocketchat_app_inference_PocketChatEngine_nativeMemoryUpdateSession(
+        JNIEnv * env, jclass,
+        jlong model_handle, jstring j_memory_dir,
+        jobjectArray roles, jobjectArray contents,
+        jint n_ctx, jint n_threads) {
+    auto * model = reinterpret_cast<pc_model *>(model_handle);
+    const char * memory_dir = env->GetStringUTFChars(j_memory_dir, nullptr);
+    JniMessageArray msgs(env, roles, contents);
+
+    const int rc = pc_memory_update_session(model, memory_dir, msgs.data(), msgs.size(),
+                                             (uint32_t) n_ctx, (int32_t) n_threads);
+    if (rc != 0) {
+        LOGW("nativeMemoryUpdateSession failed: %s", pc_memory_last_error());
+    }
+
+    env->ReleaseStringUTFChars(j_memory_dir, memory_dir);
+    return rc;
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_pocketchat_app_inference_PocketChatEngine_nativeMemoryLastError(JNIEnv * env, jclass) {
+    return env->NewStringUTF(pc_memory_last_error());
 }
 
 } // extern "C"

@@ -65,8 +65,11 @@ fun ChatScreen(onOpenModelManager: () -> Unit, viewModel: ChatViewModel = viewMo
 @Composable
 private fun MessageScrollback(modifier: Modifier, uiState: ChatUiState) {
     val listState = rememberLazyListState()
-    val statusLine = statusLineFor(uiState.modelStatus, uiState.error)
-    val totalRows = uiState.messages.size + (if (statusLine != null) 1 else 0) + (if (uiState.isGenerating) 1 else 0)
+    val statusLine = statusLineFor(uiState)
+    // While a memory update runs, the streaming response is already cleared —
+    // its own status line takes over instead of an empty "pocketchat> _" line.
+    val showStreamingLine = uiState.isGenerating && !uiState.isUpdatingMemory
+    val totalRows = uiState.messages.size + (if (statusLine != null) 1 else 0) + (if (showStreamingLine) 1 else 0)
 
     LaunchedEffect(totalRows, uiState.streamingResponse) {
         if (totalRows > 0) listState.animateScrollToItem(totalRows - 1)
@@ -82,17 +85,21 @@ private fun MessageScrollback(modifier: Modifier, uiState: ChatUiState) {
         if (statusLine != null) {
             item { TerminalText(statusLine.first, statusLine.second) }
         }
-        if (uiState.isGenerating) {
+        if (showStreamingLine) {
             item { TerminalText("pocketchat> ${uiState.streamingResponse}_", TermForeground) }
         }
     }
 }
 
-private fun statusLineFor(status: ModelStatus, error: String?): Pair<String, Color>? = when {
-    status is ModelStatus.Loading -> "pocketchat> loading model_" to TermDim
-    status is ModelStatus.Failed -> "pocketchat> error: ${status.message}" to TermError
-    error != null -> "pocketchat> error: $error" to TermError
-    else -> null
+private fun statusLineFor(uiState: ChatUiState): Pair<String, Color>? {
+    val status = uiState.modelStatus
+    return when {
+        status is ModelStatus.Loading -> "pocketchat> loading model_" to TermDim
+        status is ModelStatus.Failed -> "pocketchat> error: ${status.message}" to TermError
+        uiState.isUpdatingMemory -> "pocketchat> updating memory_" to TermDim
+        uiState.error != null -> "pocketchat> error: ${uiState.error}" to TermError
+        else -> null
+    }
 }
 
 @Composable
