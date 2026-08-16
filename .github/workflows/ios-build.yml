@@ -1,0 +1,54 @@
+name: iOS build
+
+# Pipeline smoke test only for now: builds the placeholder SwiftUI shell.
+# core/ isn't wired into the iOS app yet (that's Phase 4 in PLAN.md), so this
+# doesn't trigger on core/** changes — narrow it back to include core/** once
+# there's an XCFramework/bridge here for those changes to actually affect.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios-build.yml"
+  pull_request:
+    paths:
+      - "ios/**"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref && github.ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: Build for iOS Simulator
+        working-directory: ios
+        run: |
+          xcodebuild -project PocketChat.xcodeproj \
+            -scheme PocketChat \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -configuration Debug \
+            -derivedDataPath build \
+            build
+
+      - name: Upload simulator build
+        uses: actions/upload-artifact@v6
+        with:
+          name: pocketchat-ios-simulator-build
+          path: ios/build/Build/Products/Debug-iphonesimulator/PocketChat.app

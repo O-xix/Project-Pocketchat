@@ -6,7 +6,10 @@ plugins {
 android {
     namespace = "com.pocketchat.app"
     compileSdk = 34
-    ndkVersion = "27.0.12077973"
+    // Pinned to the version llama.cpp's own CI currently builds against
+    // (.github/workflows/build-android.yml in the submodule) — keeps us on a
+    // version this exact vendored commit is actually verified to compile with.
+    ndkVersion = "29.0.14206865"
 
     defaultConfig {
         applicationId = "com.pocketchat.app"

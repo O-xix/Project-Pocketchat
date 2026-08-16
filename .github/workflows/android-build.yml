@@ -1,0 +1,78 @@
+name: Android build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "android/**"
+      - "core/**"
+      - ".github/workflows/android-build.yml"
+  pull_request:
+    paths:
+      - "android/**"
+      - "core/**"
+  workflow_dispatch:
+    inputs:
+      all_abis:
+        description: "Build all ABIs (arm64-v8a, armeabi-v7a, x86_64) instead of just arm64-v8a"
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref && github.ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # llama.cpp is a large C++ codebase and we build it fresh each run (no
+    # wrapper/cache to reuse yet) — a full build can take a while.
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Set up JDK
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+        with:
+          log-accepted-android-sdk-licenses: false
+
+      - name: Install NDK + CMake
+        # Versions pinned in android/app/build.gradle.kts. The NDK version
+        # matches what llama.cpp's own CI (core/llama.cpp/.github/workflows/
+        # build-android.yml) currently builds this exact vendored commit
+        # against.
+        run: sdkmanager "ndk;29.0.14206865" "cmake;3.22.1"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Assemble debug APK
+        working-directory: android
+        env:
+          # Default to arm64-v8a only for fast push/PR feedback — that's the
+          # primary target device (S25 Ultra) anyway. Full multi-ABI builds
+          # are opt-in via workflow_dispatch for actual release prep.
+          ALL_ABIS: ${{ github.event_name == 'workflow_dispatch' && inputs.all_abis == true }}
+        run: |
+          ABI_ARG="-Pandroid.injected.build.abi=arm64-v8a"
+          if [ "$ALL_ABIS" = "true" ]; then
+            ABI_ARG=""
+          fi
+          gradle assembleDebug --no-daemon $ABI_ARG
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v6
+        with:
+          name: pocketchat-debug-apk
+          path: android/app/build/outputs/apk/debug/*.apk
