@@ -6,6 +6,7 @@ plugins {
 android {
     namespace = "com.pocketchat.app"
     compileSdk = 34
+    ndkVersion = "27.0.12077973"
 
     defaultConfig {
         applicationId = "com.pocketchat.app"
@@ -14,6 +15,27 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "0.1.0"
+
+        ndk {
+            // arm64-v8a covers virtually all target devices; armeabi-v7a keeps
+            // the floor-spec end covered; x86_64 is for the emulator.
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+        }
+
+        externalNativeBuild {
+            cmake {
+                // Single .so, statically linking llama/ggml (see core/CMakeLists.txt) —
+                // c++_static avoids packaging a separate libc++_shared.so.
+                arguments += listOf("-DANDROID_STL=c++_static")
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     buildTypes {
