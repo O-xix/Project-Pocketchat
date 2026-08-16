@@ -4,8 +4,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -32,15 +34,16 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.pocketchat.app.inference.ChatMessage
-
-private val TermBackground = Color.Black
-private val TermForeground = Color(0xFF33FF66)
-private val TermDim = Color(0xFF1F8A3D)
-private val TermError = Color(0xFFFF5C5C)
-private val TermUser = Color(0xFFEDEDED)
+import com.pocketchat.app.ui.TermBackground
+import com.pocketchat.app.ui.TermDim
+import com.pocketchat.app.ui.TermError
+import com.pocketchat.app.ui.TermForeground
+import com.pocketchat.app.ui.TermUser
+import com.pocketchat.app.ui.TerminalMenuItem
+import com.pocketchat.app.ui.TerminalText
 
 @Composable
-fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
+fun ChatScreen(onOpenModelManager: () -> Unit, viewModel: ChatViewModel = viewModel()) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
     Column(
@@ -49,6 +52,8 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
             .background(TermBackground)
             .padding(12.dp)
     ) {
+        TerminalMenuItem("[models]", onClick = onOpenModelManager)
+        Spacer(Modifier.height(4.dp))
         MessageScrollback(modifier = Modifier.weight(1f), uiState = uiState)
         InputPrompt(
             enabled = uiState.modelStatus is ModelStatus.Ready && !uiState.isGenerating,
@@ -94,16 +99,6 @@ private fun statusLineFor(status: ModelStatus, error: String?): Pair<String, Col
 private fun MessageLine(message: ChatMessage) {
     val (prefix, color) = if (message.role == "user") "you> " to TermUser else "pocketchat> " to TermForeground
     TerminalText(prefix + message.content, color)
-}
-
-@Composable
-private fun TerminalText(text: String, color: Color) {
-    Text(
-        text = text,
-        color = color,
-        fontFamily = FontFamily.Monospace,
-        style = MaterialTheme.typography.bodyLarge,
-    )
 }
 
 @Composable

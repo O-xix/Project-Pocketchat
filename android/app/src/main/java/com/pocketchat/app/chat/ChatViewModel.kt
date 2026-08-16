@@ -7,7 +7,7 @@ import com.pocketchat.app.inference.ChatMessage
 import com.pocketchat.app.inference.PocketChatContext
 import com.pocketchat.app.inference.PocketChatException
 import com.pocketchat.app.inference.PocketChatModel
-import java.io.File
+import com.pocketchat.app.models.ModelStorage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -30,16 +30,6 @@ data class ChatUiState(
     val error: String? = null,
 )
 
-/**
- * There's no model manager/downloader screen yet (that's a separate,
- * later piece of Phase 2) — until then, the chat screen just looks for any
- * .gguf file already sitting in the app's external files dir.
- */
-private fun findModelFile(app: Application): File? =
-    app.getExternalFilesDir("models")
-        ?.listFiles { f -> f.isFile && f.name.endsWith(".gguf") }
-        ?.minByOrNull { it.name }
-
 class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _uiState = MutableStateFlow(ChatUiState())
@@ -48,25 +38,49 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private var model: PocketChatModel? = null
     private var context: PocketChatContext? = null
 
+    /** Path of the model currently loaded into [model]/[context], if any. */
+    private var loadedModelPath: String? = null
+
     init {
         viewModelScope.launch(Dispatchers.IO) { loadModel() }
     }
 
     private fun loadModel() {
         val app = getApplication<Application>()
+        val modelFile = ModelStorage.activeModelFile(app)
         try {
-            val modelFile = findModelFile(app)
-                ?: throw PocketChatException(
-                    "no .gguf model found in ${app.getExternalFilesDir("models")}\n" +
-                        "(adb push one there for now — the model manager/downloader screen comes later)"
-                )
+            modelFile ?: throw PocketChatException("no model available — open [models] and download one")
             val loadedModel = PocketChatModel.load(modelFile.absolutePath)
             val loadedContext = PocketChatContext.create(loadedModel)
             model = loadedModel
             context = loadedContext
+            loadedModelPath = modelFile.absolutePath
             _uiState.update { it.copy(modelStatus = ModelStatus.Ready) }
         } catch (e: Exception) {
+            loadedModelPath = null
             _uiState.update { it.copy(modelStatus = ModelStatus.Failed(e.message ?: "failed to load model")) }
+        }
+    }
+
+    /**
+     * Call after returning from the model manager screen in case the active
+     * model changed there — a no-op if it didn't. Ignored mid-generation,
+     * since there's no sensible way to switch a model out from under a
+     * running generateChat() call.
+     */
+    fun reloadModelIfChanged() {
+        if (_uiState.value.isGenerating) return
+        val app = getApplication<Application>()
+        val activePath = ModelStorage.activeModelFile(app)?.absolutePath
+        if (activePath == loadedModelPath) return
+
+        viewModelScope.launch(Dispatchers.IO) {
+            context?.close()
+            model?.close()
+            context = null
+            model = null
+            _uiState.update { ChatUiState(modelStatus = ModelStatus.Loading) }
+            loadModel()
         }
     }
 
