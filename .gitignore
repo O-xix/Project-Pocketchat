@@ -1,0 +1,35 @@
+# --- Models & memory data (never committed) ---
+*.gguf
+/models/
+core/memory-store/
+*.txt.bak
+
+# --- Android / Gradle ---
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.cxx/
+android/*.iml
+android/.idea/
+*.apk
+*.aab
+
+# --- CMake / native build ---
+core/build/
+**/CMakeCache.txt
+**/CMakeFiles/
+**/cmake-build-*/
+
+# --- iOS / Xcode ---
+ios/*.xcodeproj/
+ios/DerivedData/
+ios/build/
+ios/.build/
+ios/**/*.xcuserstate
+ios/**/xcuserdata/
+ios/Pods/
+
+# --- OS / editor cruft ---
+.DS_Store
+*.swp

@@ -1,0 +1,25 @@
+# XcodeGen spec — CI runs `xcodegen generate` to produce PocketChat.xcodeproj
+# rather than committing a hand-authored/Xcode-generated .pbxproj.
+name: PocketChat
+options:
+  bundleIdPrefix: com.pocketchat
+  deploymentTarget:
+    iOS: "15.0" # covers roughly the same "last 6-7 years" hardware floor as Android minSdk 26
+
+targets:
+  PocketChat:
+    type: application
+    platform: iOS
+    sources:
+      - path: PocketChat
+    info:
+      path: PocketChat/Info.plist
+      properties:
+        UILaunchScreen: {}
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.pocketchat.app
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1" # iPhone only for now
