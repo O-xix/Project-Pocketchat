@@ -74,8 +74,10 @@ int pc_generate_chat(
 );
 
 // Low-level: generate directly from a raw, already-formatted prompt string,
-// bypassing the chat template. Used by the memory subsystem, whose
-// fact-extraction and summarization prompts aren't chat turns.
+// bypassing the chat template entirely. core/memory/ ended up using
+// pc_generate_chat() on a scratch context instead (better instruction-
+// following on instruct-tuned models than a bare unformatted prompt) — this
+// is here for callers that genuinely want a raw completion.
 int pc_generate_raw(
     pc_context             * ctx,
     const char              * prompt,

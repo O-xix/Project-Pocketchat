@@ -27,8 +27,17 @@ add_library(pocketchat_inference STATIC
 target_include_directories(pocketchat_inference PUBLIC inference)
 target_link_libraries(pocketchat_inference PUBLIC llama)
 
-option(POCKETCHAT_BUILD_CLI "Build the standalone chat_cli test tool" ON)
+add_library(pocketchat_memory STATIC
+    memory/pocketchat_memory.cpp
+)
+target_include_directories(pocketchat_memory PUBLIC memory)
+target_link_libraries(pocketchat_memory PUBLIC pocketchat_inference)
+
+option(POCKETCHAT_BUILD_CLI "Build the standalone chat_cli/memory_cli test tools" ON)
 if(POCKETCHAT_BUILD_CLI)
     add_executable(pocketchat_chat_cli tools/chat_cli.cpp)
     target_link_libraries(pocketchat_chat_cli PRIVATE pocketchat_inference)
+
+    add_executable(pocketchat_memory_cli tools/memory_cli.cpp)
+    target_link_libraries(pocketchat_memory_cli PRIVATE pocketchat_memory)
 endif()
