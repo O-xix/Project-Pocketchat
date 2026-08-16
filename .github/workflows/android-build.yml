@@ -65,7 +65,7 @@ jobs:
           # are opt-in via workflow_dispatch for actual release prep.
           ALL_ABIS: ${{ github.event_name == 'workflow_dispatch' && inputs.all_abis == true }}
         run: |
-          ABI_ARG="-Pandroid.injected.build.abi=arm64-v8a"
+          ABI_ARG="-Ppocketchat.abi=arm64-v8a"
           if [ "$ALL_ABIS" = "true" ]; then
             ABI_ARG=""
           fi
@@ -76,3 +76,4 @@ jobs:
         with:
           name: pocketchat-debug-apk
           path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error

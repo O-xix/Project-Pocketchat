@@ -21,8 +21,14 @@ android {
 
         ndk {
             // arm64-v8a covers virtually all target devices; armeabi-v7a keeps
-            // the floor-spec end covered; x86_64 is for the emulator.
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+            // the floor-spec end covered; x86_64 is for the emulator. CI passes
+            // -Ppocketchat.abi=<abi> to restrict this to one ABI for fast
+            // push/PR builds — a real Gradle property our own script reads,
+            // unlike AGP's Studio-deploy-only android.injected.build.abi flag,
+            // which produces no packaged APK when used outside Studio's deploy
+            // task graph.
+            val abiOverride = project.findProperty("pocketchat.abi") as String?
+            abiFilters += abiOverride?.let { listOf(it) } ?: listOf("arm64-v8a", "armeabi-v7a", "x86_64")
         }
 
         externalNativeBuild {
