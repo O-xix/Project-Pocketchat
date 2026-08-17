@@ -3,6 +3,10 @@ package com.pocketchat.app.models
 import android.app.ActivityManager
 import android.app.Application
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import java.io.File
@@ -10,6 +14,7 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
+import kotlin.coroutines.resume
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -21,17 +26,20 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 
-private const val MAX_AUTO_RETRIES = 3
 private const val PROGRESS_UPDATE_STEP_BYTES = 256L * 1024 // throttle UI updates to ~every 256 KiB
+private const val MAX_BACKOFF_MILLIS = 30_000L
 
 sealed interface ModelRowStatus {
     data object NotDownloaded : ModelRowStatus
     data class Downloading(val downloadedBytes: Long, val totalBytes: Long) : ModelRowStatus
-    /** Stopped (network hiccup, sustained outage, or user-paused) with the partial file kept — resumable. */
+    /** Actively retrying on its own (network hiccup or waiting for connectivity) — [pause] still works, no [resume] needed. */
+    data class Reconnecting(val downloadedBytes: Long, val totalBytes: Long, val reason: String) : ModelRowStatus
+    /** Stopped and waiting for the user — either they tapped pause, or a partial file was found at app start. */
     data class Paused(val downloadedBytes: Long, val totalBytes: Long, val reason: String) : ModelRowStatus
     data object Downloaded : ModelRowStatus
-    /** Not resumable — e.g. a 404. The partial file (if any) has been discarded. */
+    /** Not resumable — e.g. a real 404. The partial file (if any) has been discarded. */
     data class Failed(val message: String) : ModelRowStatus
 }
 
@@ -71,6 +79,7 @@ class ModelManagerViewModel(app: Application) : AndroidViewModel(app) {
                 val status = when {
                     // Don't clobber an in-flight/pausable state with a plain re-scan.
                     existingStatus is ModelRowStatus.Downloading -> existingStatus
+                    existingStatus is ModelRowStatus.Reconnecting -> existingStatus
                     existingStatus is ModelRowStatus.Paused -> existingStatus
                     entry.filename in downloadedFilenames -> ModelRowStatus.Downloaded
                     // A .part file with no in-memory state means the app was killed
@@ -99,7 +108,7 @@ class ModelManagerViewModel(app: Application) : AndroidViewModel(app) {
         downloadJobs[entry.id] = viewModelScope.launch(Dispatchers.IO) { runDownload(entry) }
     }
 
-    /** Stops an active download without discarding progress — resumable via [download]. */
+    /** Stops an active/reconnecting download without discarding progress — resumable via [download]. */
     fun pauseDownload(entry: ModelCatalogEntry) {
         downloadJobs[entry.id]?.cancel()
     }
@@ -128,7 +137,15 @@ class ModelManagerViewModel(app: Application) : AndroidViewModel(app) {
     private fun partialFile(app: Application, entry: ModelCatalogEntry): File =
         File(ModelStorage.modelsDir(app), entry.filename + ".part")
 
-    /** Drives [downloadOnce], auto-retrying transient failures with backoff before settling into [ModelRowStatus.Paused]. */
+    /**
+     * Drives [downloadOnce], retrying transient/connectivity failures
+     * indefinitely — this only stops on success, a [PermanentDownloadFailure],
+     * or the user explicitly calling [pauseDownload]/[discardDownload]. A
+     * spotty connection can drop for well longer than a few quick retries
+     * would cover, so there's no retry-count ceiling here; when there's no
+     * network at all it waits on a ConnectivityManager callback (near-zero
+     * cost) instead of hammering DNS on a timer.
+     */
     private suspend fun runDownload(entry: ModelCatalogEntry) {
         val app = getApplication<Application>()
         val tempFile = partialFile(app, entry)
@@ -154,21 +171,24 @@ class ModelManagerViewModel(app: Application) : AndroidViewModel(app) {
                 return
             } catch (e: Exception) {
                 val bytes = tempFile.length()
-                if (attempt >= MAX_AUTO_RETRIES) {
+                if (!isNetworkAvailable(app)) {
+                    updateRowStatus(entry.id, ModelRowStatus.Reconnecting(bytes, entry.approxSizeBytes, "waiting for network connection…"))
+                    awaitNetworkAvailable(app)
+                } else {
+                    val backoff = backoffMillis(attempt)
                     updateRowStatus(
                         entry.id,
-                        ModelRowStatus.Paused(bytes, entry.approxSizeBytes, (e.message ?: "network error") + " — tap resume to retry"),
+                        ModelRowStatus.Reconnecting(bytes, entry.approxSizeBytes, "${e.message ?: "connection error"} — retrying in ${backoff / 1000}s…"),
                     )
-                    return
+                    delay(backoff)
                 }
-                updateRowStatus(
-                    entry.id,
-                    ModelRowStatus.Paused(bytes, entry.approxSizeBytes, "connection lost, retrying ($attempt/$MAX_AUTO_RETRIES)…"),
-                )
-                delay(1_000L * (1L shl (attempt - 1))) // 1s, 2s, 4s
+                updateRowStatus(entry.id, ModelRowStatus.Downloading(bytes, entry.approxSizeBytes))
             }
         }
     }
+
+    private fun backoffMillis(attempt: Int): Long =
+        (1_000L * (1L shl (attempt - 1).coerceAtMost(20))).coerceAtMost(MAX_BACKOFF_MILLIS)
 
     /** One connect-and-stream attempt. Resumes via an HTTP Range request when `tempFile` already has bytes. */
     private suspend fun downloadOnce(entry: ModelCatalogEntry, tempFile: File, finalFile: File) {
@@ -245,4 +265,39 @@ private fun detectTotalRamBytes(context: Context): Long {
     val info = ActivityManager.MemoryInfo()
     activityManager.getMemoryInfo(info)
     return info.totalMem
+}
+
+private fun isNetworkAvailable(context: Context): Boolean {
+    val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+    val network = cm.activeNetwork ?: return false
+    val caps = cm.getNetworkCapabilities(network) ?: return false
+    return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+        caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+}
+
+/** Suspends until ConnectivityManager reports a validated internet-capable network — cancellable. */
+private suspend fun awaitNetworkAvailable(context: Context) {
+    if (isNetworkAvailable(context)) return
+
+    val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+    suspendCancellableCoroutine<Unit> { cont ->
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                // Otherwise this callback stays registered with the system for
+                // the rest of the app's process lifetime — on a connection that
+                // drops and reconnects repeatedly, each cycle through
+                // runDownload()'s retry loop would leak another one.
+                runCatching { cm.unregisterNetworkCallback(this) }
+                if (cont.isActive) cont.resume(Unit)
+            }
+        }
+        val request = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+            .build()
+        cm.registerNetworkCallback(request, callback)
+        cont.invokeOnCancellation {
+            runCatching { cm.unregisterNetworkCallback(callback) }
+        }
+    }
 }

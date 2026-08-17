@@ -89,6 +89,16 @@ private fun ModelRowView(
                 }
             }
 
+            is ModelRowStatus.Reconnecting -> {
+                TerminalText(status.reason, TermDim)
+                TerminalText(progressLine(status.downloadedBytes, status.totalBytes), TermDim)
+                // Still actively retrying on its own — only offer to stop it,
+                // not [resume], since nothing needs resuming yet.
+                Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    TerminalMenuItem("[pause]", onPause)
+                }
+            }
+
             is ModelRowStatus.Paused -> {
                 TerminalText("paused — ${status.reason}", TermError)
                 TerminalText(progressLine(status.downloadedBytes, status.totalBytes), TermDim)
