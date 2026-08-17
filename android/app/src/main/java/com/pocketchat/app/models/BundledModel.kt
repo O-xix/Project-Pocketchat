@@ -6,8 +6,8 @@ import java.io.FileOutputStream
 import java.io.IOException
 
 /**
- * The floor-tier model shipped inside the APK itself, if any —
- * assets/models/*.gguf is populated by the CI build
+ * The floor-tier model shipped inside the APK itself, if any — a .gguf file
+ * under assets/models/, populated by the CI build
  * (.github/workflows/android-build.yml), not committed to git (a few
  * hundred MB is well past what a normal git push accepts anyway). Lets the
  * app be usable immediately after install with no first-run download, which
