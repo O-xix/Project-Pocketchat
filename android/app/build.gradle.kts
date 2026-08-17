@@ -53,6 +53,14 @@ android {
         }
     }
 
+    androidResources {
+        // The bundled model (assets/models/*.gguf, see BundledModel.kt) is
+        // already dense quantized binary data — deflating it wastes build
+        // time for negligible size savings, and this keeps its APK entry
+        // simply stored rather than needing decompression to extract.
+        noCompress += "gguf"
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17

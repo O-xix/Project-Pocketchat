@@ -8,6 +8,7 @@ import com.pocketchat.app.inference.PocketChatContext
 import com.pocketchat.app.inference.PocketChatException
 import com.pocketchat.app.inference.PocketChatMemory
 import com.pocketchat.app.inference.PocketChatModel
+import com.pocketchat.app.models.BundledModel
 import com.pocketchat.app.models.MemoryStorage
 import com.pocketchat.app.models.ModelStorage
 import kotlinx.coroutines.Dispatchers
@@ -59,8 +60,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun loadModel() {
         val app = getApplication<Application>()
-        val modelFile = ModelStorage.activeModelFile(app)
         try {
+            // No-op unless this build bundles a model — extracts it out of assets
+            // on first run and marks it active if nothing else is chosen yet, so
+            // a fresh install has something to chat with immediately. Inside this
+            // try block deliberately: it must never crash app startup.
+            BundledModel.ensureExtracted(app)
+            val modelFile = ModelStorage.activeModelFile(app)
             modelFile ?: throw PocketChatException("no model available — open [models] and download one")
             val loadedModel = PocketChatModel.load(modelFile.absolutePath)
             val loadedContext = PocketChatContext.create(loadedModel)

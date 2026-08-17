@@ -57,6 +57,33 @@ jobs:
         with:
           gradle-version: "8.7"
 
+      - name: Cache bundled model asset
+        id: cache-model
+        uses: actions/cache@v4
+        with:
+          path: android/app/src/main/assets/models/qwen2.5-0.5b-instruct-q4_k_m.gguf
+          key: bundled-model-qwen2.5-0.5b-instruct-q4_k_m-v1
+
+      - name: Download bundled model asset
+        # Must match the floor-tier entry in ModelCatalog.kt. Baked into the
+        # APK as an asset (BundledModel.kt extracts it on first run) so the
+        # app is usable right after install with no first download.
+        if: steps.cache-model.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p android/app/src/main/assets/models
+          curl -sL --retry 5 --retry-delay 5 --fail \
+            -o android/app/src/main/assets/models/qwen2.5-0.5b-instruct-q4_k_m.gguf \
+            "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+
+      - name: Verify bundled model asset size
+        run: |
+          expected=491400032
+          actual=$(stat -c%s android/app/src/main/assets/models/qwen2.5-0.5b-instruct-q4_k_m.gguf)
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::bundled model size mismatch: expected $expected bytes, got $actual"
+            exit 1
+          fi
+
       - name: Assemble debug APK
         working-directory: android
         env:
@@ -70,6 +97,18 @@ jobs:
             ABI_ARG=""
           fi
           gradle assembleDebug --no-daemon $ABI_ARG
+
+      - name: Verify APK size budget
+        # Enforces the "keep the app under 1.5GB with a model bundled" call.
+        run: |
+          apk=$(find android/app/build/outputs/apk/debug -name '*.apk' | head -1)
+          size=$(stat -c%s "$apk")
+          budget=$((1500 * 1024 * 1024))
+          echo "APK size: $size bytes (budget: $budget bytes)"
+          if [ "$size" -gt "$budget" ]; then
+            echo "::error::APK size $size bytes exceeds the 1.5GB budget ($budget bytes)"
+            exit 1
+          fi
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v6
