@@ -45,7 +45,9 @@ fun ModelManagerScreen(onBack: () -> Unit, viewModel: ModelManagerViewModel = vi
                     row = row,
                     isActive = row.entry.filename == uiState.activeModelFilename,
                     onDownload = { viewModel.download(row.entry) },
-                    onCancel = { viewModel.cancelDownload(row.entry) },
+                    onPause = { viewModel.pauseDownload(row.entry) },
+                    onResume = { viewModel.download(row.entry) },
+                    onDiscard = { viewModel.discardDownload(row.entry) },
                     onDelete = { viewModel.delete(row.entry) },
                     onActivate = { viewModel.setActive(row.entry) },
                 )
@@ -62,7 +64,9 @@ private fun ModelRowView(
     row: ModelRow,
     isActive: Boolean,
     onDownload: () -> Unit,
-    onCancel: () -> Unit,
+    onPause: () -> Unit,
+    onResume: () -> Unit,
+    onDiscard: () -> Unit,
     onDelete: () -> Unit,
     onActivate: () -> Unit,
 ) {
@@ -71,16 +75,31 @@ private fun ModelRowView(
             "[${row.entry.tier.label}] ${row.entry.displayName} (${row.entry.quant}, ${formatSize(row.entry.approxSizeBytes)})",
             TermForeground,
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            when (val status = row.status) {
-                is ModelRowStatus.NotDownloaded -> TerminalMenuItem("[download]", onDownload)
-
-                is ModelRowStatus.Downloading -> {
-                    TerminalText("${(status.progress * 100).toInt()}%", TermDim)
-                    TerminalMenuItem("[cancel]", onCancel)
+        when (val status = row.status) {
+            is ModelRowStatus.NotDownloaded -> {
+                Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    TerminalMenuItem("[download]", onDownload)
                 }
+            }
 
-                is ModelRowStatus.Downloaded -> {
+            is ModelRowStatus.Downloading -> {
+                TerminalText(progressLine(status.downloadedBytes, status.totalBytes), TermDim)
+                Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    TerminalMenuItem("[pause]", onPause)
+                }
+            }
+
+            is ModelRowStatus.Paused -> {
+                TerminalText("paused — ${status.reason}", TermError)
+                TerminalText(progressLine(status.downloadedBytes, status.totalBytes), TermDim)
+                Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    TerminalMenuItem("[resume]", onResume)
+                    TerminalMenuItem("[discard]", onDiscard)
+                }
+            }
+
+            is ModelRowStatus.Downloaded -> {
+                Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                     if (isActive) {
                         TerminalText("active", TermDim)
                     } else {
@@ -88,15 +107,27 @@ private fun ModelRowView(
                     }
                     TerminalMenuItem("[delete]", onDelete)
                 }
+            }
 
-                is ModelRowStatus.Failed -> {
-                    TerminalText("failed: ${status.message}", TermError)
+            is ModelRowStatus.Failed -> {
+                TerminalText("failed: ${status.message}", TermError)
+                Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                     TerminalMenuItem("[retry]", onDownload)
                 }
             }
         }
     }
 }
+
+private fun progressLine(downloadedBytes: Long, totalBytes: Long): String =
+    "${formatPercent(downloadedBytes, totalBytes)}  —  ${formatMb(downloadedBytes)} / ${formatMb(totalBytes)}"
+
+private fun formatPercent(downloadedBytes: Long, totalBytes: Long): String {
+    if (totalBytes <= 0) return "0.000%"
+    return "%.3f%%".format(downloadedBytes * 100.0 / totalBytes)
+}
+
+private fun formatMb(bytes: Long): String = "%.2f MB".format(bytes / 1024.0 / 1024.0)
 
 private fun formatSize(bytes: Long): String {
     val gb = bytes / 1024.0 / 1024.0 / 1024.0
