@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.pocketchat.app.inference.ChatMessage
+import com.pocketchat.app.inference.MemoryPhase
 import com.pocketchat.app.inference.PocketChatContext
 import com.pocketchat.app.inference.PocketChatException
 import com.pocketchat.app.inference.PocketChatMemory
@@ -27,13 +28,16 @@ sealed interface ModelStatus {
     data class Failed(val message: String) : ModelStatus
 }
 
+/** Live progress for an in-flight memory update — see ChatViewModel.maybeUpdateMemory(). */
+data class MemoryUpdateProgress(val phase: MemoryPhase, val text: String)
+
 data class ChatUiState(
     val modelStatus: ModelStatus = ModelStatus.Loading,
     val messages: List<ChatMessage> = emptyList(),
     /** The in-progress assistant reply; empty when not generating. */
     val streamingResponse: String = "",
     val isGenerating: Boolean = false,
-    val isUpdatingMemory: Boolean = false,
+    val memoryUpdateProgress: MemoryUpdateProgress? = null,
     val error: String? = null,
 )
 
@@ -143,9 +147,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 // PocketChatModel that reloadModelIfChanged() can close once
                 // isGenerating drops — keeping it inside this window is what makes
                 // that guard actually cover memory updates too, not just chat turns.
-                _uiState.update { it.copy(isUpdatingMemory = true) }
                 maybeUpdateMemory()
-                _uiState.update { it.copy(isUpdatingMemory = false, isGenerating = false) }
+                _uiState.update { it.copy(isGenerating = false) }
             } catch (e: Exception) {
                 // The native context's KV cache now holds whatever partial reply was
                 // streamed before the error, but `messages` never got that turn
@@ -156,7 +159,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 _uiState.update {
                     it.copy(
                         isGenerating = false,
-                        isUpdatingMemory = false,
+                        memoryUpdateProgress = null,
                         streamingResponse = "",
                         error = e.message ?: "generation failed",
                     )
@@ -169,8 +172,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      * Runs a memory update (PLAN.md Phase 3: "every N turns") once enough new
      * messages have accumulated since the last one, on its own scratch native
      * context (see core/memory/) so it doesn't touch the main chat context.
-     * Failures are swallowed — a stale memory isn't worth surfacing an error
-     * over — and the next update will just cover a longer span.
+     * Streams live progress into [ChatUiState.memoryUpdateProgress] so the UI
+     * can show something more useful than an opaque "updating memory" spinner.
+     * Never throws — failures are swallowed (a stale memory isn't worth
+     * surfacing an error over) and the next update will just cover a longer
+     * span; progress is always cleared before returning either way.
      */
     private fun maybeUpdateMemory() {
         val currentModel = model ?: return
@@ -180,9 +186,23 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val unsummarized = messages.subList(lastMemoryUpdateIndex, messages.size).toList()
         lastMemoryUpdateIndex = messages.size
         try {
-            PocketChatMemory.updateSession(currentModel, MemoryStorage.memoryDir(getApplication()), unsummarized)
+            var currentPhase: MemoryPhase? = null
+            val buffer = StringBuilder()
+            PocketChatMemory.updateSession(
+                currentModel, MemoryStorage.memoryDir(getApplication()), unsummarized,
+            ) { phase, piece ->
+                if (phase != currentPhase) {
+                    currentPhase = phase
+                    buffer.setLength(0)
+                }
+                buffer.append(piece)
+                _uiState.update { it.copy(memoryUpdateProgress = MemoryUpdateProgress(phase, buffer.toString())) }
+                true
+            }
         } catch (_: Exception) {
             // Best-effort; see doc comment above.
+        } finally {
+            _uiState.update { it.copy(memoryUpdateProgress = null) }
         }
     }
 

@@ -17,6 +17,11 @@ internal object PocketChatEngine {
         fun onToken(piece: String): Boolean
     }
 
+    fun interface MemoryProgressCallback {
+        /** phase: 0 = extracting facts, 1 = summarizing. Return false to stop that phase's generation early. */
+        fun onProgress(phase: Int, piece: String): Boolean
+    }
+
     @JvmStatic external fun nativeInit()
 
     @JvmStatic external fun nativeLoadModel(path: String, nGpuLayers: Int): Long
@@ -52,6 +57,7 @@ internal object PocketChatEngine {
         contents: Array<String>,
         nCtx: Int,
         nThreads: Int,
+        progressCallback: MemoryProgressCallback?,
     ): Int
 
     @JvmStatic external fun nativeMemoryLastError(): String

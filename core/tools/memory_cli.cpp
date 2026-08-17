@@ -24,6 +24,23 @@ int collect_and_print(const char * piece, void * user_data) {
     return 1;
 }
 
+// Prints a header the first time each phase's tokens start arriving, so the
+// live memory-update stream reads like a small transcript of its own.
+struct memory_progress_state {
+    pc_memory_phase last_phase = static_cast<pc_memory_phase>(-1);
+};
+
+int print_memory_progress(pc_memory_phase phase, const char * piece, void * user_data) {
+    auto * state = static_cast<memory_progress_state *>(user_data);
+    if (phase != state->last_phase) {
+        state->last_phase = phase;
+        printf("\n[%s]\n", phase == PC_MEMORY_PHASE_EXTRACTING_FACTS ? "extracting facts" : "summarizing");
+    }
+    fputs(piece, stdout);
+    fflush(stdout);
+    return 1;
+}
+
 } // namespace
 
 int main(int argc, char ** argv) {
@@ -129,8 +146,11 @@ int main(int argc, char ** argv) {
             messages.push_back({ history[i].first.c_str(), history[i].second.c_str() });
         }
 
-        printf("\nupdating memory from this session...\n");
-        const int rc = pc_memory_update_session(model, memory_dir.c_str(), messages.data(), messages.size(), n_ctx, n_threads);
+        printf("\nupdating memory from this session...");
+        memory_progress_state progress_state;
+        const int rc = pc_memory_update_session(model, memory_dir.c_str(), messages.data(), messages.size(),
+                                                 n_ctx, n_threads, print_memory_progress, &progress_state);
+        printf("\n");
         if (rc != 0) {
             fprintf(stderr, "memory update failed: %s\n", pc_memory_last_error());
         } else {

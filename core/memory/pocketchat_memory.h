@@ -25,6 +25,18 @@ extern "C" {
 char * pc_memory_build_context(const char * memory_dir, int max_summaries, size_t max_chars);
 void pc_memory_free_string(char * s);
 
+typedef enum {
+    PC_MEMORY_PHASE_EXTRACTING_FACTS = 0,
+    PC_MEMORY_PHASE_SUMMARIZING = 1,
+} pc_memory_phase;
+
+// Called once per generated piece of text during pc_memory_update_session,
+// tagged with which of its two generation passes produced it — lets a caller
+// show live progress instead of a single opaque "updating memory" spinner.
+// Return 0 to stop that phase's generation early (the update as a whole
+// still completes normally), non-zero to keep going.
+typedef int (*pc_memory_progress_callback)(pc_memory_phase phase, const char * piece, void * user_data);
+
 // Prompts `model` (via a fresh, isolated context of its own — the caller's
 // live chat context/KV cache is never touched) to:
 //   1. extract/merge durable facts from `messages` into memory_dir/profile.txt
@@ -32,15 +44,18 @@ void pc_memory_free_string(char * s);
 //      memory_dir/summaries/<timestamp>.txt
 // Intended to run after a session ends (or every N turns) — see PLAN.md
 // Phase 3. `messages` should be the session's transcript (or however much of
-// it the caller wants summarized/extracted from).
+// it the caller wants summarized/extracted from). `progress_callback` may be
+// NULL if the caller doesn't want streaming updates.
 // Returns 0 on success, negative on error (see pc_memory_last_error()).
 int pc_memory_update_session(
-    pc_model               * model,
-    const char              * memory_dir,
-    const pc_chat_message   * messages,
-    size_t                    n_messages,
-    uint32_t                  n_ctx,
-    int32_t                   n_threads
+    pc_model                     * model,
+    const char                    * memory_dir,
+    const pc_chat_message         * messages,
+    size_t                          n_messages,
+    uint32_t                        n_ctx,
+    int32_t                         n_threads,
+    pc_memory_progress_callback     progress_callback,
+    void                           * progress_user_data
 );
 
 // Human-readable message for the last error on this thread; empty string if none.

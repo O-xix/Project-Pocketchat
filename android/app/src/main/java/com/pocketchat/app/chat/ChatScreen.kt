@@ -34,6 +34,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.pocketchat.app.inference.ChatMessage
+import com.pocketchat.app.inference.MemoryPhase
 import com.pocketchat.app.ui.TermBackground
 import com.pocketchat.app.ui.TermDim
 import com.pocketchat.app.ui.TermError
@@ -43,7 +44,11 @@ import com.pocketchat.app.ui.TerminalMenuItem
 import com.pocketchat.app.ui.TerminalText
 
 @Composable
-fun ChatScreen(onOpenModelManager: () -> Unit, viewModel: ChatViewModel = viewModel()) {
+fun ChatScreen(
+    onOpenModelManager: () -> Unit,
+    onOpenMemoryViewer: () -> Unit,
+    viewModel: ChatViewModel = viewModel(),
+) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
     Column(
@@ -52,7 +57,10 @@ fun ChatScreen(onOpenModelManager: () -> Unit, viewModel: ChatViewModel = viewMo
             .background(TermBackground)
             .padding(12.dp)
     ) {
-        TerminalMenuItem("[models]", onClick = onOpenModelManager)
+        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            TerminalMenuItem("[models]", onClick = onOpenModelManager)
+            TerminalMenuItem("[memory]", onClick = onOpenMemoryViewer)
+        }
         Spacer(Modifier.height(4.dp))
         MessageScrollback(modifier = Modifier.weight(1f), uiState = uiState)
         InputPrompt(
@@ -68,7 +76,7 @@ private fun MessageScrollback(modifier: Modifier, uiState: ChatUiState) {
     val statusLine = statusLineFor(uiState)
     // While a memory update runs, the streaming response is already cleared —
     // its own status line takes over instead of an empty "pocketchat> _" line.
-    val showStreamingLine = uiState.isGenerating && !uiState.isUpdatingMemory
+    val showStreamingLine = uiState.isGenerating && uiState.memoryUpdateProgress == null
     val totalRows = uiState.messages.size + (if (statusLine != null) 1 else 0) + (if (showStreamingLine) 1 else 0)
 
     LaunchedEffect(totalRows, uiState.streamingResponse) {
@@ -93,10 +101,17 @@ private fun MessageScrollback(modifier: Modifier, uiState: ChatUiState) {
 
 private fun statusLineFor(uiState: ChatUiState): Pair<String, Color>? {
     val status = uiState.modelStatus
+    val memProgress = uiState.memoryUpdateProgress
     return when {
         status is ModelStatus.Loading -> "pocketchat> loading model_" to TermDim
         status is ModelStatus.Failed -> "pocketchat> error: ${status.message}" to TermError
-        uiState.isUpdatingMemory -> "pocketchat> updating memory_" to TermDim
+        memProgress != null -> {
+            val phaseLabel = when (memProgress.phase) {
+                MemoryPhase.EXTRACTING_FACTS -> "updating memory (extracting facts)"
+                MemoryPhase.SUMMARIZING -> "updating memory (summarizing)"
+            }
+            "pocketchat> $phaseLabel: ${memProgress.text}_" to TermDim
+        }
         uiState.error != null -> "pocketchat> error: ${uiState.error}" to TermError
         else -> null
     }

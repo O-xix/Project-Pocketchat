@@ -2,6 +2,8 @@ package com.pocketchat.app.inference
 
 import java.io.File
 
+enum class MemoryPhase { EXTRACTING_FACTS, SUMMARIZING }
+
 object PocketChatMemory {
 
     /**
@@ -19,6 +21,12 @@ object PocketChatMemory {
      * durable facts from `messages` into memoryDir/profile.txt and append a
      * summary to memoryDir/summaries/. Blocking — call from a background
      * thread.
+     *
+     * [onProgress], if given, is invoked once per generated piece of text
+     * across both generation passes (fact extraction, then summarizing),
+     * tagged with which one — for showing live progress instead of an opaque
+     * spinner. Return `false` from it to stop that phase's generation early
+     * (the update as a whole still completes normally).
      */
     fun updateSession(
         model: PocketChatModel,
@@ -26,12 +34,19 @@ object PocketChatMemory {
         messages: List<ChatMessage>,
         nCtx: Int = 0,
         nThreads: Int = -1,
+        onProgress: ((phase: MemoryPhase, piece: String) -> Boolean)? = null,
     ) {
         if (messages.isEmpty()) return
         val roles = Array(messages.size) { messages[it].role }
         val contents = Array(messages.size) { messages[it].content }
+        val callback = onProgress?.let { cb ->
+            PocketChatEngine.MemoryProgressCallback { phaseOrdinal, piece ->
+                val phase = if (phaseOrdinal == 0) MemoryPhase.EXTRACTING_FACTS else MemoryPhase.SUMMARIZING
+                cb(phase, piece)
+            }
+        }
         val rc = PocketChatEngine.nativeMemoryUpdateSession(
-            model.handle, memoryDir.absolutePath, roles, contents, nCtx, nThreads,
+            model.handle, memoryDir.absolutePath, roles, contents, nCtx, nThreads, callback,
         )
         if (rc != 0) {
             throw PocketChatException(PocketChatEngine.nativeMemoryLastError())

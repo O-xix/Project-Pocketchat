@@ -67,23 +67,43 @@ std::string timestamp_filename() {
     return buf;
 }
 
-int collect_callback(const char * piece, void * user_data) {
-    static_cast<std::string *>(user_data)->append(piece);
+struct progress_relay_state {
+    std::string                    response;
+    pc_memory_phase                phase;
+    pc_memory_progress_callback    callback; // may be null
+    void                          * user_data;
+};
+
+int progress_relay_callback(const char * piece, void * user_data) {
+    auto * state = static_cast<progress_relay_state *>(user_data);
+    state->response += piece;
+    if (state->callback) {
+        return state->callback(state->phase, piece, state->user_data);
+    }
     return 1;
 }
 
 // Runs a single one-shot instruction prompt against `ctx` (already reset to a
 // clean state by the caller) and returns the trimmed response, or an empty
 // string on failure (with pc_last_error() set by the inference layer).
-std::string run_prompt(pc_context * ctx, const std::string & prompt, pc_sampling_params sampling) {
+// Streams each generated piece through `progress_cb` (if non-null), tagged
+// with `phase`, as it's produced.
+std::string run_prompt(
+    pc_context                  * ctx,
+    const std::string           & prompt,
+    pc_sampling_params            sampling,
+    pc_memory_phase                phase,
+    pc_memory_progress_callback   progress_cb,
+    void                        * progress_ud
+) {
     const pc_chat_message msg{ "user", prompt.c_str() };
-    std::string response;
-    const int rc = pc_generate_chat(ctx, &msg, 1, sampling, collect_callback, &response);
+    progress_relay_state state{ "", phase, progress_cb, progress_ud };
+    const int rc = pc_generate_chat(ctx, &msg, 1, sampling, progress_relay_callback, &state);
     if (rc != 0) {
         set_error(std::string("generation failed: ") + pc_last_error());
         return "";
     }
-    return trim(response);
+    return trim(state.response);
 }
 
 } // namespace
@@ -145,12 +165,14 @@ void pc_memory_free_string(char * s) {
 }
 
 int pc_memory_update_session(
-    pc_model               * model,
-    const char              * memory_dir,
-    const pc_chat_message   * messages,
-    size_t                    n_messages,
-    uint32_t                  n_ctx,
-    int32_t                   n_threads
+    pc_model                     * model,
+    const char                    * memory_dir,
+    const pc_chat_message         * messages,
+    size_t                          n_messages,
+    uint32_t                        n_ctx,
+    int32_t                         n_threads,
+    pc_memory_progress_callback     progress_callback,
+    void                           * progress_user_data
 ) {
     if (!model || !memory_dir || !messages || n_messages == 0) {
         set_error("pc_memory_update_session: invalid arguments");
@@ -190,7 +212,8 @@ int pc_memory_update_session(
             << (existing_profile.empty() ? "(empty)" : existing_profile) << "\n\n"
             "Session transcript:\n" << transcript;
 
-        const std::string updated = run_prompt(scratch, prompt.str(), sampling);
+        const std::string updated = run_prompt(
+            scratch, prompt.str(), sampling, PC_MEMORY_PHASE_EXTRACTING_FACTS, progress_callback, progress_user_data);
         if (!updated.empty()) {
             write_file(dir / "profile.txt", updated + "\n");
         }
@@ -207,7 +230,8 @@ int pc_memory_update_session(
             "meta-commentary.\n\n"
             "Session transcript:\n" << transcript;
 
-        const std::string summary = run_prompt(scratch, prompt.str(), sampling);
+        const std::string summary = run_prompt(
+            scratch, prompt.str(), sampling, PC_MEMORY_PHASE_SUMMARIZING, progress_callback, progress_user_data);
         if (!summary.empty()) {
             write_file(dir / "summaries" / timestamp_filename(), summary + "\n");
         }

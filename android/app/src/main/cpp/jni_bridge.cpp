@@ -84,6 +84,29 @@ int jni_token_callback(const char * piece, void * user_data) {
     return keep_going ? 1 : 0;
 }
 
+// Same shape as JniCallback, for PocketChatEngine.MemoryProgressCallback
+// (onProgress(Int, String): Boolean) instead of TokenCallback.
+struct JniMemoryProgressCallback {
+    JNIEnv    * env;
+    jobject     callback;
+    jmethodID   method;
+};
+
+int jni_memory_progress_callback(pc_memory_phase phase, const char * piece, void * user_data) {
+    auto * cb = static_cast<JniMemoryProgressCallback *>(user_data);
+
+    const jstring jpiece = cb->env->NewStringUTF(piece);
+    const jboolean keep_going = cb->env->CallBooleanMethod(cb->callback, cb->method, (jint) phase, jpiece);
+    cb->env->DeleteLocalRef(jpiece);
+
+    if (cb->env->ExceptionCheck()) {
+        cb->env->ExceptionDescribe();
+        cb->env->ExceptionClear();
+        return 0;
+    }
+    return keep_going ? 1 : 0;
+}
+
 } // namespace
 
 extern "C" {
@@ -200,17 +223,29 @@ Java_com_pocketchat_app_inference_PocketChatEngine_nativeMemoryUpdateSession(
         JNIEnv * env, jclass,
         jlong model_handle, jstring j_memory_dir,
         jobjectArray roles, jobjectArray contents,
-        jint n_ctx, jint n_threads) {
+        jint n_ctx, jint n_threads,
+        jobject progress_callback) {
     auto * model = reinterpret_cast<pc_model *>(model_handle);
     const char * memory_dir = env->GetStringUTFChars(j_memory_dir, nullptr);
     JniMessageArray msgs(env, roles, contents);
 
-    const int rc = pc_memory_update_session(model, memory_dir, msgs.data(), msgs.size(),
-                                             (uint32_t) n_ctx, (int32_t) n_threads);
+    jclass    callback_class = nullptr;
+    jmethodID method         = nullptr;
+    if (progress_callback) {
+        callback_class = env->GetObjectClass(progress_callback);
+        method         = env->GetMethodID(callback_class, "onProgress", "(ILjava/lang/String;)Z");
+    }
+    JniMemoryProgressCallback jni_cb{ env, progress_callback, method };
+
+    const int rc = pc_memory_update_session(
+        model, memory_dir, msgs.data(), msgs.size(), (uint32_t) n_ctx, (int32_t) n_threads,
+        progress_callback ? jni_memory_progress_callback : nullptr,
+        progress_callback ? &jni_cb : nullptr);
     if (rc != 0) {
         LOGW("nativeMemoryUpdateSession failed: %s", pc_memory_last_error());
     }
 
+    if (callback_class) env->DeleteLocalRef(callback_class);
     env->ReleaseStringUTFChars(j_memory_dir, memory_dir);
     return rc;
 }

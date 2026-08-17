@@ -8,9 +8,10 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.pocketchat.app.chat.ChatScreen
 import com.pocketchat.app.chat.ChatViewModel
+import com.pocketchat.app.memory.MemoryViewerScreen
 import com.pocketchat.app.models.ModelManagerScreen
 
-private enum class Screen { Chat, ModelManager }
+private enum class Screen { Chat, ModelManager, MemoryViewer }
 
 @Composable
 fun PocketChatApp() {
@@ -21,6 +22,7 @@ fun PocketChatApp() {
         Screen.Chat -> ChatScreen(
             viewModel = chatViewModel,
             onOpenModelManager = { screen = Screen.ModelManager },
+            onOpenMemoryViewer = { screen = Screen.MemoryViewer },
         )
 
         Screen.ModelManager -> ModelManagerScreen(
@@ -31,5 +33,7 @@ fun PocketChatApp() {
                 screen = Screen.Chat
             },
         )
+
+        Screen.MemoryViewer -> MemoryViewerScreen(onBack = { screen = Screen.Chat })
     }
 }
