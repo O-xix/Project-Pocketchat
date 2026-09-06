@@ -10,9 +10,13 @@ import com.pocketchat.app.inference.PocketChatException
 import com.pocketchat.app.inference.PocketChatMemory
 import com.pocketchat.app.inference.PocketChatModel
 import com.pocketchat.app.inference.PocketChatSafety
+import com.pocketchat.app.inference.SamplingParams
 import com.pocketchat.app.models.BundledModel
+import com.pocketchat.app.models.ChatStorage
 import com.pocketchat.app.models.MemoryStorage
 import com.pocketchat.app.models.ModelStorage
+import com.pocketchat.app.power.DeviceStressMonitor
+import com.pocketchat.app.power.ThrottleStatus
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -22,6 +26,8 @@ import kotlinx.coroutines.launch
 
 private const val MEMORY_UPDATE_EVERY_N_MESSAGES = 6
 private const val BASE_SYSTEM_PROMPT = "You are PocketChat, a helpful assistant."
+/** Response-length ceiling applied for one turn when NFR-011 detects battery/thermal stress. */
+private const val THROTTLED_N_PREDICT = 256
 
 sealed interface ModelStatus {
     data object Loading : ModelStatus
@@ -39,6 +45,8 @@ data class ChatUiState(
     val streamingResponse: String = "",
     val isGenerating: Boolean = false,
     val memoryUpdateProgress: MemoryUpdateProgress? = null,
+    /** Set for the duration of a generation NFR-011 detected as battery/thermal-stressed. */
+    val throttleStatus: ThrottleStatus? = null,
     val error: String? = null,
 )
 
@@ -60,7 +68,23 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private var lastMemoryUpdateIndex: Int = 0
 
     init {
-        viewModelScope.launch(Dispatchers.IO) { loadModel() }
+        viewModelScope.launch(Dispatchers.IO) {
+            // NFR-012 (BOOM recovery): a fresh ChatViewModel instance means the
+            // OS killed the previous process while backgrounded — the transcript
+            // saved to disk (see persistTranscript()) is the only way to recover
+            // it, since ViewModels themselves don't survive process death.
+            val restored = ChatStorage.load(getApplication())
+            if (restored.isNotEmpty()) {
+                _uiState.update { it.copy(messages = restored) }
+                // We don't persist which restored messages were already folded
+                // into memory before the process died, so treat all of them as
+                // already accounted for rather than risk re-summarizing (and
+                // duplicating) turns memory may have already processed —
+                // consistent with maybeUpdateMemory() already being best-effort.
+                lastMemoryUpdateIndex = restored.size
+            }
+            loadModel()
+        }
     }
 
     private fun loadModel() {
@@ -148,28 +172,40 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
 
+        // NFR-011: a point-in-time check is enough here since it's re-run on
+        // every sendMessage() call — a device that's stressed for one long
+        // conversation gets re-detected turn by turn rather than needing a
+        // live listener. Only the response-length ceiling is throttled, not
+        // per-token generation speed (which isn't controllable from here);
+        // see REQUIREMENTS.md NFR-011 for that scope note.
+        val throttle = DeviceStressMonitor.current(getApplication())
+
         _uiState.update {
             it.copy(
                 messages = it.messages + ChatMessage("user", trimmed),
                 isGenerating = true,
                 streamingResponse = "",
                 error = null,
+                throttleStatus = throttle,
             )
         }
 
         viewModelScope.launch(Dispatchers.IO) {
+            persistTranscript() // NFR-012: save the user's turn before generating, in case the process dies mid-response
             try {
                 // The system turn carries remembered context but never appears in
                 // the displayed transcript (ChatUiState.messages) or gets counted
                 // towards a memory update — it's reconstructed fresh each call.
                 val history = listOf(ChatMessage("system", systemPrompt)) + _uiState.value.messages
-                val response = ctx.generateChat(history) { piece ->
+                val sampling = if (throttle != null) SamplingParams(nPredict = THROTTLED_N_PREDICT) else SamplingParams()
+                val response = ctx.generateChat(history, sampling) { piece ->
                     _uiState.update { it.copy(streamingResponse = it.streamingResponse + piece) }
                     true
                 }
                 _uiState.update {
                     it.copy(messages = it.messages + ChatMessage("assistant", response), streamingResponse = "")
                 }
+                persistTranscript()
 
                 // Runs inline (still under isGenerating) rather than as a detached
                 // background job: pc_memory_update_session() runs against the same
@@ -177,7 +213,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 // isGenerating drops — keeping it inside this window is what makes
                 // that guard actually cover memory updates too, not just chat turns.
                 maybeUpdateMemory()
-                _uiState.update { it.copy(isGenerating = false) }
+                _uiState.update { it.copy(isGenerating = false, throttleStatus = null) }
             } catch (e: Exception) {
                 // The native context's KV cache now holds whatever partial reply was
                 // streamed before the error, but `messages` never got that turn
@@ -190,11 +226,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         isGenerating = false,
                         memoryUpdateProgress = null,
                         streamingResponse = "",
+                        throttleStatus = null,
                         error = e.message ?: "generation failed",
                     )
                 }
             }
         }
+    }
+
+    /** NFR-012: overwrite the on-disk transcript with the current visible messages. */
+    private fun persistTranscript() {
+        ChatStorage.save(getApplication(), _uiState.value.messages)
     }
 
     /**

@@ -35,6 +35,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.pocketchat.app.inference.ChatMessage
 import com.pocketchat.app.inference.MemoryPhase
+import com.pocketchat.app.power.ThrottleReason
 import com.pocketchat.app.ui.TermBackground
 import com.pocketchat.app.ui.TermDim
 import com.pocketchat.app.ui.TermError
@@ -77,7 +78,13 @@ private fun MessageScrollback(modifier: Modifier, uiState: ChatUiState) {
     // While a memory update runs, the streaming response is already cleared —
     // its own status line takes over instead of an empty "pocketchat> _" line.
     val showStreamingLine = uiState.isGenerating && uiState.memoryUpdateProgress == null
-    val totalRows = uiState.messages.size + (if (statusLine != null) 1 else 0) + (if (showStreamingLine) 1 else 0)
+    // NFR-011: shown alongside the streaming line, not instead of it — the
+    // point is naming the detected trigger, not hiding that generation is happening.
+    val throttleLine = if (uiState.isGenerating) throttleLineFor(uiState) else null
+    val totalRows = uiState.messages.size +
+        (if (statusLine != null) 1 else 0) +
+        (if (throttleLine != null) 1 else 0) +
+        (if (showStreamingLine) 1 else 0)
 
     LaunchedEffect(totalRows, uiState.streamingResponse) {
         if (totalRows > 0) listState.animateScrollToItem(totalRows - 1)
@@ -93,10 +100,22 @@ private fun MessageScrollback(modifier: Modifier, uiState: ChatUiState) {
         if (statusLine != null) {
             item { TerminalText(statusLine.first, statusLine.second) }
         }
+        if (throttleLine != null) {
+            item { TerminalText(throttleLine, TermDim) }
+        }
         if (showStreamingLine) {
             item { TerminalText("pocketchat> ${uiState.streamingResponse}_", TermForeground) }
         }
     }
+}
+
+private fun throttleLineFor(uiState: ChatUiState): String? {
+    val throttle = uiState.throttleStatus ?: return null
+    val reason = when (throttle.reason) {
+        ThrottleReason.BATTERY_LOW -> "battery low (${throttle.detail})"
+        ThrottleReason.THERMAL_HIGH -> "device hot (${throttle.detail})"
+    }
+    return "pocketchat> throttled — $reason, shortening this response"
 }
 
 private fun statusLineFor(uiState: ChatUiState): Pair<String, Color>? {
