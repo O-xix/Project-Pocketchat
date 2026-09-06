@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.14)
-project(pocketchat_core CXX)
+project(pocketchat_core CXX C) # C is for the vendored sqlite3.c (third_party/sqlite3/)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -21,9 +21,20 @@ set(BUILD_SHARED_LIBS  OFF CACHE BOOL "" FORCE)
 
 add_subdirectory(llama.cpp)
 
-# FR-013's FTS5 relevance search (core/memory) — ships with the OS on both
-# Android and iOS, so this links the system SQLite rather than vendoring one.
-find_package(SQLite3 REQUIRED)
+# FR-013's FTS5 relevance search (core/memory). Vendored (see
+# third_party/sqlite3/README.md) rather than linked against the OS's system
+# SQLite: the Android NDK exposes libsqlite3.so as a linkable stub but does
+# NOT bundle sqlite3.h, so this guarantees identical FTS5 availability on
+# every API level this app targets instead of depending on NDK header support
+# that turned out not to exist.
+add_library(pocketchat_sqlite3 STATIC
+    third_party/sqlite3/sqlite3.c
+)
+target_include_directories(pocketchat_sqlite3 PUBLIC third_party/sqlite3)
+target_compile_definitions(pocketchat_sqlite3 PUBLIC
+    SQLITE_ENABLE_FTS5
+    SQLITE_OMIT_LOAD_EXTENSION
+)
 
 add_library(pocketchat_inference STATIC
     inference/pocketchat_inference.cpp
@@ -35,7 +46,7 @@ add_library(pocketchat_memory STATIC
     memory/pocketchat_memory.cpp
 )
 target_include_directories(pocketchat_memory PUBLIC memory)
-target_link_libraries(pocketchat_memory PUBLIC pocketchat_inference PRIVATE SQLite::SQLite3)
+target_link_libraries(pocketchat_memory PUBLIC pocketchat_inference PRIVATE pocketchat_sqlite3)
 
 # Standalone: no dependency on pocketchat_inference/llama.cpp, so it stays
 # usable (and testable) even before a model is loaded.
