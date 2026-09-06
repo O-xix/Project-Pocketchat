@@ -16,13 +16,25 @@
 extern "C" {
 #endif
 
-// Reads memory_dir/profile.txt (if present) and up to `max_summaries` of the
-// most recent files under memory_dir/summaries/, formatted into a single
-// string meant to be spliced into a system prompt. Bounded to roughly
-// `max_chars` — if the content doesn't fit, the oldest part is dropped first.
-// Returns an empty (non-null) string if there's no memory yet, or NULL on
-// allocation failure. Caller must free the result with pc_memory_free_string().
-char * pc_memory_build_context(const char * memory_dir, int max_summaries, size_t max_chars);
+// Reads memory_dir/profile.txt (always included in full when present) and up
+// to `max_summaries` entries from memory_dir/summaries/, formatted into a
+// single string meant to be spliced into a system prompt.
+//
+// `query` — typically the current conversation's latest message/topic — picks
+// which summaries are most relevant via an in-memory SQLite FTS5/BM25 index
+// built fresh from the summary files on every call (FR-013; see the
+// relevant_summary_files() doc comment in the .cpp for why it's never
+// persisted to disk). Pass NULL or "" to always use plain recency instead
+// (e.g. there's no conversation yet to key off of). Also falls back to
+// recency automatically whenever FTS5 isn't available on this build/device,
+// `query` has no usable search terms once sanitized, or it simply matches
+// nothing — any of those count as "no strong match."
+//
+// Bounded to roughly `max_chars` — if the content doesn't fit, the oldest
+// part is dropped first. Returns an empty (non-null) string if there's no
+// memory yet, or NULL on allocation failure. Caller must free the result with
+// pc_memory_free_string().
+char * pc_memory_build_context(const char * memory_dir, const char * query, int max_summaries, size_t max_chars);
 void pc_memory_free_string(char * s);
 
 typedef enum {

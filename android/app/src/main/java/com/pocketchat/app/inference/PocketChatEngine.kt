@@ -49,7 +49,7 @@ internal object PocketChatEngine {
 
     @JvmStatic external fun nativeLastError(): String
 
-    @JvmStatic external fun nativeMemoryBuildContext(memoryDir: String, maxSummaries: Int, maxChars: Int): String
+    @JvmStatic external fun nativeMemoryBuildContext(memoryDir: String, query: String?, maxSummaries: Int, maxChars: Int): String
 
     @JvmStatic external fun nativeMemoryUpdateSession(
         modelHandle: Long,

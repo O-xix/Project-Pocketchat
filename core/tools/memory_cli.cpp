@@ -91,22 +91,16 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
-    char * remembered = pc_memory_build_context(memory_dir.c_str(), /*max_summaries=*/5, /*max_chars=*/2000);
-    std::string system_prompt = "You are PocketChat, a helpful assistant.";
-    if (remembered && remembered[0] != '\0') {
-        printf("--- injected memory context ---\n%s--------------------------------\n", remembered);
-        system_prompt += "\n\n";
-        system_prompt += remembered;
-    } else {
-        printf("--- no prior memory found in %s ---\n", memory_dir.c_str());
-    }
-    if (remembered) pc_memory_free_string(remembered);
+    const std::string base_system_prompt = "You are PocketChat, a helpful assistant.";
 
-    // history[0] is always this injected-memory system turn — kept separate
+    // history[0] is always the injected-memory system turn — kept separate
     // from what gets summarized later, since pc_memory_update_session()
     // already reads the existing profile.txt itself to merge against.
+    // Rebuilt every turn (see below) rather than once here, so FR-013's
+    // relevance search actually has a query — the user's just-typed
+    // message — to rank summaries against.
     std::vector<std::pair<std::string, std::string>> history;
-    history.emplace_back("system", system_prompt);
+    history.emplace_back("system", base_system_prompt);
 
     const pc_sampling_params sampling = pc_sampling_default_params();
 
@@ -118,6 +112,22 @@ int main(int argc, char ** argv) {
         if (!std::getline(std::cin, user) || user.empty()) {
             break;
         }
+
+        // FR-013: rank injected summaries by relevance to this message
+        // instead of pure recency (falls back to recency automatically —
+        // see pc_memory_build_context's doc comment — so this is also
+        // exactly what the very first turn above already exercised).
+        char * remembered = pc_memory_build_context(memory_dir.c_str(), user.c_str(), /*max_summaries=*/5, /*max_chars=*/2000);
+        std::string system_prompt = base_system_prompt;
+        if (remembered && remembered[0] != '\0') {
+            printf("--- injected memory context (query: \"%s\") ---\n%s--------------------------------\n",
+                   user.c_str(), remembered);
+            system_prompt += "\n\n";
+            system_prompt += remembered;
+        }
+        if (remembered) pc_memory_free_string(remembered);
+        history[0].second = system_prompt;
+
         history.emplace_back("user", user);
 
         std::vector<pc_chat_message> messages;

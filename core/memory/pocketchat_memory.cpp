@@ -1,6 +1,9 @@
 #include "pocketchat_memory.h"
 
+#include <sqlite3.h>
+
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -9,6 +12,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -106,9 +110,149 @@ std::string run_prompt(
     return trim(state.response);
 }
 
+// A minimal, common-English stopword list (includes the single-letter
+// fragments contractions like "what's"/"don't" split into, e.g. "s"/"t").
+// Without this, a filler word shared by nearly every summary (e.g. "a", "s")
+// would OR-match almost the whole corpus, drowning out the one document that
+// actually shares a real topic word and defeating "fall back when there's no
+// strong match" — bm25 alone doesn't save this for a tiny personal corpus,
+// where a common word can appear in every single document.
+bool is_stopword(const std::string & word) {
+    static const std::unordered_set<std::string> kStopwords = {
+        "a", "an", "and", "are", "as", "at", "be", "but", "by", "can", "could",
+        "did", "do", "does", "for", "from", "had", "has", "have", "he", "her",
+        "his", "how", "i", "if", "in", "into", "is", "it", "its", "me", "my",
+        "no", "not", "of", "on", "or", "our", "she", "should", "so", "such",
+        "that", "the", "their", "then", "there", "these", "they", "this",
+        "to", "was", "we", "were", "what", "when", "where", "which", "who",
+        "whom", "whose", "why", "will", "with", "would", "you", "your",
+        "s", "t", "re", "ve", "ll", "m", "d",
+    };
+    return kStopwords.count(word) > 0;
+}
+
+// Splits `raw` into lowercased alphanumeric tokens (dropping stopwords, see
+// is_stopword()) and safely quotes each one, so arbitrary free-text (a real
+// chat message) can never be misparsed as FTS5 query-language syntax
+// (AND/OR/NOT, bare quotes, column filters, etc.) — every token becomes a
+// literal phrase match, ORed together. Returns "" if no usable tokens were
+// found (e.g. the query was empty, pure punctuation, or entirely stopwords),
+// which the caller treats as "nothing to search for."
+std::string sanitize_fts5_query(const std::string & raw) {
+    constexpr size_t kMaxTokens = 32; // bounds query size/cost; plenty for a single chat message
+    std::ostringstream out;
+    std::string token;
+    size_t n_tokens = 0;
+
+    auto flush_token = [&]() {
+        if (!token.empty() && n_tokens < kMaxTokens && !is_stopword(token)) {
+            if (n_tokens > 0) out << " OR ";
+            out << '"' << token << '"';
+            n_tokens++;
+        }
+        token.clear();
+    };
+    for (unsigned char c : raw) {
+        if (std::isalnum(c)) {
+            token += (char) std::tolower(c);
+        } else {
+            flush_token();
+        }
+    }
+    flush_token();
+    return out.str();
+}
+
+constexpr const char * kAnnotationSuffix = ".annotation.txt";
+
+// fs::path::extension() only strips the *last* extension component, so an
+// annotation file (e.g. "20260101-090000.annotation.txt") still reports
+// ".txt" and would otherwise be scanned in as a phantom extra summary in its
+// own right — this is what a plain ".txt" filter must additionally exclude.
+bool is_annotation_file(const fs::path & p) {
+    const std::string name = p.filename().string();
+    const size_t suffix_len = std::strlen(kAnnotationSuffix);
+    return name.size() >= suffix_len && name.compare(name.size() - suffix_len, suffix_len, kAnnotationSuffix) == 0;
+}
+
+// FR-023: a summary's user-authored annotation lives in a sibling file next
+// to it — memory_dir/summaries/<timestamp>.annotation.txt — additive and
+// separate from the model's own <timestamp>.txt (see pocketchat_memory.h's
+// NFR-006 note). Empty string if there's no annotation.
+std::string annotation_for(const fs::path & summary_file) {
+    return trim(read_file(summary_file.parent_path() / (summary_file.stem().string() + kAnnotationSuffix)));
+}
+
+// A summary's annotation is weighted this many times higher than its own
+// summary text when ranking FTS5 matches — a user-flagged note is presumably
+// the highest-signal text for future recall (FR-023), so it should be able
+// to surface a summary even when the model's own wording doesn't share
+// vocabulary with the query.
+constexpr double kAnnotationBm25Weight = 3.0;
+
+// Tries to select up to `max_summaries` of `files` most relevant to `query`.
+// Builds a throwaway in-memory FTS5 index from their current contents (and
+// each one's annotation, if any — see annotation_for()) on every call — the
+// .txt files are the single source of truth, so there's nothing to keep in
+// sync and no on-disk index format to ever migrate; corpus sizes here (a
+// personal on-device memory log) are small enough that rebuilding costs a
+// negligible fraction of a millisecond.
+// Returns the selected files in relevance order (best match first), or an
+// empty vector if FTS5 isn't available, `query` has no usable search terms,
+// or nothing matched — any of which tells the caller to fall back to its
+// existing recency-window selection instead.
+std::vector<fs::path> relevant_summary_files(
+    const std::vector<fs::path> & files, const std::string & query, int max_summaries) {
+    const std::string fts_query = sanitize_fts5_query(query);
+    if (fts_query.empty() || files.empty()) return {};
+
+    sqlite3 * db = nullptr;
+    if (sqlite3_open(":memory:", &db) != SQLITE_OK) {
+        sqlite3_close(db);
+        return {};
+    }
+    if (sqlite3_exec(db, "CREATE VIRTUAL TABLE summaries USING fts5(content, annotation)", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        sqlite3_close(db); // fts5 module unavailable on this build/device
+        return {};
+    }
+
+    sqlite3_stmt * insert_stmt = nullptr;
+    sqlite3_prepare_v2(db, "INSERT INTO summaries(rowid, content, annotation) VALUES (?, ?, ?)", -1, &insert_stmt, nullptr);
+    for (size_t i = 0; i < files.size(); i++) {
+        const std::string content = trim(read_file(files[i]));
+        const std::string annotation = annotation_for(files[i]);
+        sqlite3_bind_int64(insert_stmt, 1, (sqlite3_int64) i); // rowid == index into `files`, for mapping matches back
+        sqlite3_bind_text(insert_stmt, 2, content.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(insert_stmt, 3, annotation.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_step(insert_stmt);
+        sqlite3_reset(insert_stmt);
+    }
+    sqlite3_finalize(insert_stmt);
+
+    std::vector<fs::path> result;
+    sqlite3_stmt * query_stmt = nullptr;
+    // bm25() ranks best matches with the smallest (most negative) value, so
+    // the default ascending ORDER BY already puts the best match first. The
+    // two weight arguments correspond to (content, annotation) column order.
+    const char * sql =
+        "SELECT rowid FROM summaries WHERE summaries MATCH ? ORDER BY bm25(summaries, 1.0, ?) LIMIT ?";
+    if (sqlite3_prepare_v2(db, sql, -1, &query_stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_text(query_stmt, 1, fts_query.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_double(query_stmt, 2, kAnnotationBm25Weight);
+        sqlite3_bind_int(query_stmt, 3, max_summaries > 0 ? max_summaries : -1);
+        while (sqlite3_step(query_stmt) == SQLITE_ROW) {
+            const size_t idx = (size_t) sqlite3_column_int64(query_stmt, 0);
+            if (idx < files.size()) result.push_back(files[idx]);
+        }
+        sqlite3_finalize(query_stmt);
+    }
+    sqlite3_close(db);
+    return result;
+}
+
 } // namespace
 
-char * pc_memory_build_context(const char * memory_dir, int max_summaries, size_t max_chars) {
+char * pc_memory_build_context(const char * memory_dir, const char * query, int max_summaries, size_t max_chars) {
     if (!memory_dir) {
         set_error("pc_memory_build_context: memory_dir is null");
         return nullptr;
@@ -127,7 +271,7 @@ char * pc_memory_build_context(const char * memory_dir, int max_summaries, size_
     std::error_code ec;
     if (fs::exists(summaries_dir, ec) && fs::is_directory(summaries_dir, ec)) {
         for (const auto & entry : fs::directory_iterator(summaries_dir, ec)) {
-            if (entry.is_regular_file() && entry.path().extension() == ".txt") {
+            if (entry.is_regular_file() && entry.path().extension() == ".txt" && !is_annotation_file(entry.path())) {
                 files.push_back(entry.path());
             }
         }
@@ -136,12 +280,30 @@ char * pc_memory_build_context(const char * memory_dir, int max_summaries, size_
     // lexical sort is also a chronological one.
     std::sort(files.begin(), files.end());
 
-    if (max_summaries > 0 && !files.empty()) {
+    // FR-013: prefer summaries ranked by FTS5/BM25 relevance to `query` over
+    // pure recency, falling back to the original recency-window selection
+    // whenever there's no strong match (FTS5 unavailable, no usable query
+    // terms, or zero matches) — see relevant_summary_files()'s doc comment.
+    std::vector<fs::path> selected;
+    if (query && *query) {
+        selected = relevant_summary_files(files, query, max_summaries);
+    }
+    if (selected.empty() && max_summaries > 0 && !files.empty()) {
         const size_t start = files.size() > (size_t) max_summaries ? files.size() - (size_t) max_summaries : 0;
+        selected.assign(files.begin() + start, files.end());
+    }
+
+    if (!selected.empty()) {
         out << "\nRecent session summaries:\n";
-        for (size_t i = start; i < files.size(); i++) {
-            const std::string s = trim(read_file(files[i]));
-            if (!s.empty()) out << "- " << s << "\n";
+        for (const auto & file : selected) {
+            const std::string s = trim(read_file(file));
+            if (s.empty()) continue;
+            out << "- " << s << "\n";
+            // FR-023: shown as a distinctly-labeled line, never merged into
+            // the summary text above — this is the user's own voice, not
+            // something the model wrote or is being asked to treat as such.
+            const std::string note = annotation_for(file);
+            if (!note.empty()) out << "  [user note: " << note << "]\n";
         }
     }
 

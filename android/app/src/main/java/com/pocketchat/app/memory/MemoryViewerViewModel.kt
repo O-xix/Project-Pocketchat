@@ -12,7 +12,15 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-data class MemorySummaryEntry(val timestampLabel: String, val content: String)
+private const val ANNOTATION_SUFFIX = ".annotation.txt"
+
+/** [baseName] (e.g. "20260101-090000") locates this entry's sibling annotation file for save/delete. */
+data class MemorySummaryEntry(
+    val timestampLabel: String,
+    val baseName: String,
+    val content: String,
+    val annotation: String = "",
+)
 
 data class MemoryViewerUiState(
     val isLoading: Boolean = true,
@@ -21,10 +29,12 @@ data class MemoryViewerUiState(
 )
 
 /**
- * Read-only. There is deliberately no write/delete/edit path anywhere in this
- * file — profile.txt and summaries/ are model-authored (see core/memory/) and
- * meant to be viewable but never hand-edited through the app; that's a
- * filesystem-level thing (adb, a file manager), not an in-app one.
+ * profile.txt and summaries/*.txt are model-authored (see core/memory/) and
+ * stay purely read-only here — no path in this file edits or overwrites
+ * them. FR-023 amends that boundary narrowly: a user-authored annotation is
+ * a separate, additive `<summary>.annotation.txt` sibling file, never merged
+ * into the model's own text (NFR-006). See MemoryViewerScreen for why it's
+ * rendered visually distinct.
  */
 class MemoryViewerViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -41,13 +51,33 @@ class MemoryViewerViewModel(app: Application) : AndroidViewModel(app) {
 
         val profile = File(dir, "profile.txt").takeIf { it.exists() }?.readText()?.trim() ?: ""
 
-        val summaries = File(dir, "summaries")
-            .listFiles { f -> f.isFile && f.name.endsWith(".txt") }
+        val summariesDir = File(dir, "summaries")
+        val summaries = summariesDir
+            .listFiles { f -> f.isFile && f.name.endsWith(".txt") && !f.name.endsWith(ANNOTATION_SUFFIX) }
             ?.sortedByDescending { it.name } // filenames are zero-padded timestamps; newest first
-            ?.map { MemorySummaryEntry(timestampLabelFor(it.name), it.readText().trim()) }
+            ?.map { file ->
+                val base = file.name.removeSuffix(".txt")
+                val annotation = File(summariesDir, base + ANNOTATION_SUFFIX).takeIf { it.exists() }?.readText()?.trim() ?: ""
+                MemorySummaryEntry(timestampLabelFor(file.name), base, file.readText().trim(), annotation)
+            }
             ?: emptyList()
 
         _uiState.update { it.copy(isLoading = false, profile = profile, summaries = summaries) }
+    }
+
+    /**
+     * FR-023: writes the user's own note on the summary identified by
+     * [baseName] — a blank [text] deletes it instead, since "no note" and
+     * "empty note" mean the same thing here. Never touches the summary's own
+     * .txt file. Reloads from disk afterward so the UI reflects the change.
+     */
+    fun saveAnnotation(baseName: String, text: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val file = File(File(MemoryStorage.memoryDir(getApplication()), "summaries"), baseName + ANNOTATION_SUFFIX)
+            val trimmed = text.trim()
+            if (trimmed.isEmpty()) file.delete() else file.writeText(trimmed)
+            load()
+        }
     }
 }
 

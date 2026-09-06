@@ -205,9 +205,11 @@ Java_com_pocketchat_app_inference_PocketChatEngine_nativeLastError(JNIEnv * env,
 
 JNIEXPORT jstring JNICALL
 Java_com_pocketchat_app_inference_PocketChatEngine_nativeMemoryBuildContext(
-        JNIEnv * env, jclass, jstring j_memory_dir, jint max_summaries, jint max_chars) {
+        JNIEnv * env, jclass, jstring j_memory_dir, jstring j_query, jint max_summaries, jint max_chars) {
     const char * memory_dir = env->GetStringUTFChars(j_memory_dir, nullptr);
-    char * result = pc_memory_build_context(memory_dir, max_summaries, (size_t) max_chars);
+    const char * query = j_query ? env->GetStringUTFChars(j_query, nullptr) : nullptr;
+    char * result = pc_memory_build_context(memory_dir, query, max_summaries, (size_t) max_chars);
+    if (query) env->ReleaseStringUTFChars(j_query, query);
     env->ReleaseStringUTFChars(j_memory_dir, memory_dir);
 
     if (!result) {

@@ -21,6 +21,10 @@ set(BUILD_SHARED_LIBS  OFF CACHE BOOL "" FORCE)
 
 add_subdirectory(llama.cpp)
 
+# FR-013's FTS5 relevance search (core/memory) — ships with the OS on both
+# Android and iOS, so this links the system SQLite rather than vendoring one.
+find_package(SQLite3 REQUIRED)
+
 add_library(pocketchat_inference STATIC
     inference/pocketchat_inference.cpp
 )
@@ -31,7 +35,7 @@ add_library(pocketchat_memory STATIC
     memory/pocketchat_memory.cpp
 )
 target_include_directories(pocketchat_memory PUBLIC memory)
-target_link_libraries(pocketchat_memory PUBLIC pocketchat_inference)
+target_link_libraries(pocketchat_memory PUBLIC pocketchat_inference PRIVATE SQLite::SQLite3)
 
 # Standalone: no dependency on pocketchat_inference/llama.cpp, so it stays
 # usable (and testable) even before a model is loaded.

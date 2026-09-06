@@ -7,13 +7,17 @@ enum class MemoryPhase { EXTRACTING_FACTS, SUMMARIZING }
 object PocketChatMemory {
 
     /**
-     * Reads memoryDir/profile.txt and the last [maxSummaries] session
-     * summaries into a string ready to splice into a system prompt. Empty
-     * string if there's no memory yet. Blocking (file I/O) — call from a
-     * background thread.
+     * Reads memoryDir/profile.txt (included in full) and up to [maxSummaries]
+     * entries from memoryDir/summaries/, ready to splice into a system
+     * prompt. [query] — typically the current conversation's latest message —
+     * ranks which summaries are most relevant via FTS5/BM25 (FR-013); pass
+     * null or blank to fall back to plain recency (e.g. a fresh conversation
+     * with nothing to key off yet), which also happens automatically if
+     * [query] matches nothing. Empty string if there's no memory yet.
+     * Blocking (file I/O) — call from a background thread.
      */
-    fun buildContext(memoryDir: File, maxSummaries: Int = 5, maxChars: Int = 2000): String =
-        PocketChatEngine.nativeMemoryBuildContext(memoryDir.absolutePath, maxSummaries, maxChars)
+    fun buildContext(memoryDir: File, query: String? = null, maxSummaries: Int = 5, maxChars: Int = 2000): String =
+        PocketChatEngine.nativeMemoryBuildContext(memoryDir.absolutePath, query?.takeIf { it.isNotBlank() }, maxSummaries, maxChars)
 
     /**
      * Prompts [model] — via its own fresh scratch context internally, never

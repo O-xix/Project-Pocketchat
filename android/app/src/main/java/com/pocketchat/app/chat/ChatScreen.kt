@@ -64,10 +64,32 @@ fun ChatScreen(
         }
         Spacer(Modifier.height(4.dp))
         MessageScrollback(modifier = Modifier.weight(1f), uiState = uiState)
+        uiState.pendingSummaryReview?.let { summary ->
+            SummaryReviewBanner(summary = summary, onDismiss = viewModel::dismissSummaryReview)
+        }
         InputPrompt(
             enabled = uiState.modelStatus is ModelStatus.Ready && !uiState.isGenerating,
             onSubmit = viewModel::sendMessage,
         )
+    }
+}
+
+/**
+ * FR-022: an in-app prompt shown right after a session summary finishes
+ * generating, so the user can review it while the conversation is still
+ * fresh. Read-only for now — annotating a summary is FR-023, a separate,
+ * not-yet-built ticket; this only acknowledges/dismisses.
+ */
+@Composable
+private fun SummaryReviewBanner(summary: String, onDismiss: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+    ) {
+        TerminalText("pocketchat> session summary — review:", TermDim)
+        TerminalText(summary, TermForeground)
+        TerminalMenuItem("[ok]", onClick = onDismiss)
     }
 }
 

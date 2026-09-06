@@ -22,4 +22,8 @@ target_link_libraries(pocketchat_jni
         pocketchat_memory
         pocketchat_safety
         log
+        # pocketchat_memory PRIVATE-links this too (FR-013's FTS5 search) —
+        # re-declared here since it's an external system lib, not our own
+        # static target, so it's not automatically obvious it's needed.
+        sqlite3
 )

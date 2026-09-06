@@ -47,6 +47,8 @@ data class ChatUiState(
     val memoryUpdateProgress: MemoryUpdateProgress? = null,
     /** Set for the duration of a generation NFR-011 detected as battery/thermal-stressed. */
     val throttleStatus: ThrottleStatus? = null,
+    /** FR-022: the just-generated session summary, awaiting the user's review; null once dismissed. */
+    val pendingSummaryReview: String? = null,
     val error: String? = null,
 )
 
@@ -60,9 +62,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Path of the model currently loaded into [model]/[context], if any. */
     private var loadedModelPath: String? = null
-
-    /** Remembered profile/summaries, prepended as a system turn — not shown in the transcript. */
-    private var systemPrompt: String = BASE_SYSTEM_PROMPT
 
     /** How many of [ChatUiState.messages] have already been folded into memory. */
     private var lastMemoryUpdateIndex: Int = 0
@@ -102,7 +101,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             model = loadedModel
             context = loadedContext
             loadedModelPath = modelFile.absolutePath
-            systemPrompt = buildSystemPrompt(app)
             _uiState.update { it.copy(modelStatus = ModelStatus.Ready) }
         } catch (e: Exception) {
             loadedModelPath = null
@@ -110,8 +108,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun buildSystemPrompt(app: Application): String {
-        val remembered = PocketChatMemory.buildContext(MemoryStorage.memoryDir(app))
+    /**
+     * FR-013: rebuilt fresh for every turn — [query] (the user's just-typed
+     * message) lets FTS5/BM25 pick summaries relevant to what's actually
+     * being discussed right now, rather than a static set of the most recent
+     * ones fixed at model-load time. Falls back to plain recency automatically
+     * (see PocketChatMemory.buildContext's doc comment) when there's no
+     * strong match, including the very first turn of a fresh conversation.
+     */
+    private fun buildSystemPrompt(query: String): String {
+        val remembered = PocketChatMemory.buildContext(MemoryStorage.memoryDir(getApplication()), query = query)
         return if (remembered.isBlank()) BASE_SYSTEM_PROMPT else "$BASE_SYSTEM_PROMPT\n\n$remembered"
     }
 
@@ -195,8 +201,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 // The system turn carries remembered context but never appears in
                 // the displayed transcript (ChatUiState.messages) or gets counted
-                // towards a memory update — it's reconstructed fresh each call.
-                val history = listOf(ChatMessage("system", systemPrompt)) + _uiState.value.messages
+                // towards a memory update — it's reconstructed fresh each call,
+                // now keyed off this turn's message (FR-013 relevance search).
+                val history = listOf(ChatMessage("system", buildSystemPrompt(trimmed))) + _uiState.value.messages
                 val sampling = if (throttle != null) SamplingParams(nPredict = THROTTLED_N_PREDICT) else SamplingParams()
                 val response = ctx.generateChat(history, sampling) { piece ->
                     _uiState.update { it.copy(streamingResponse = it.streamingResponse + piece) }
@@ -259,6 +266,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         try {
             var currentPhase: MemoryPhase? = null
             val buffer = StringBuilder()
+            // Tracked separately from `buffer` (which resets on every phase
+            // change, for the live-progress display) so this always ends up
+            // holding exactly the SUMMARIZING phase's text even in the edge
+            // case where that phase produces zero pieces — reusing `buffer`
+            // for both purposes would leave stale EXTRACTING_FACTS text behind
+            // in that case, which FR-022's review prompt must never show.
+            val summaryBuffer = StringBuilder()
             PocketChatMemory.updateSession(
                 currentModel, MemoryStorage.memoryDir(getApplication()), unsummarized,
             ) { phase, piece ->
@@ -267,14 +281,27 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     buffer.setLength(0)
                 }
                 buffer.append(piece)
+                if (phase == MemoryPhase.SUMMARIZING) summaryBuffer.append(piece)
                 _uiState.update { it.copy(memoryUpdateProgress = MemoryUpdateProgress(phase, buffer.toString())) }
                 true
+            }
+            // FR-022: surface the just-written summary (core/memory writes the
+            // same trimmed text to summaries/<timestamp>.txt) for in-app review
+            // while the session is still fresh. Fires every time for now.
+            val summaryText = summaryBuffer.toString().trim()
+            if (summaryText.isNotEmpty()) {
+                _uiState.update { it.copy(pendingSummaryReview = summaryText) }
             }
         } catch (_: Exception) {
             // Best-effort; see doc comment above.
         } finally {
             _uiState.update { it.copy(memoryUpdateProgress = null) }
         }
+    }
+
+    /** FR-022: acknowledge and clear the pending summary review prompt. */
+    fun dismissSummaryReview() {
+        _uiState.update { it.copy(pendingSummaryReview = null) }
     }
 
     override fun onCleared() {
