@@ -24,7 +24,7 @@ Living spec. Every requirement gets a stable, unique code (`FR-NNN` / `NFR-NNN`)
 | FR-012 | Bring-your-own-model (custom GGUF import) | Planned | 2 | PRO-6 |
 | FR-013 | Memory retrieval by relevance, not recency (FTS5) | Planned | 3 | PRO-9 |
 | FR-014 | Configurable memory voice/mode | Planned | 3 | PRO-10 |
-| FR-015 | Offline safety filtering — tier 1 (deterministic lexical filter) | Planned | new | PRO-7 |
+| FR-015 | Offline safety filtering — tier 1 (deterministic lexical filter) | Done | new | PRO-7 |
 | FR-016 | iOS app | Not started | 4 | PRO-17 |
 | FR-017 | Curated model-tiering docs (`docs/models.md`) | Not started | 6 | PRO-18 |
 | FR-018 | Semantic/vector memory search | Deferred | 3 | PRO-11 |
@@ -116,6 +116,7 @@ A setting controlling the extraction/summarization system prompt: neutral-factua
 ### FR-015 — Offline safety filtering, tier 1
 A deterministic Aho-Corasick lexical filter in `core/` (shared, not Android-only) screening prompts against known-hazardous markers before inference runs at all. Always-on, not user-toggleable in any build.
 **Why:** PocketChat currently has zero safety layer beyond the base model's own alignment. `docs/research-sovereign-on-device-llms.md`'s defense-in-depth stack starts here as the cheapest tier; `docs/research-consumer-demand-and-engineering.md` separately confirms app-store review requires native moderation for local-inference apps. This tier alone does not catch jailbreaks/encoded prompts, and deliberately does not touch general creative-writing/roleplay content — it only matches literal weapon-synthesis/precursor-chemical markers, so it does not conflict with PLAN.md's "uncensored domain specialist" target archetype. See NFR-013 for the decision to stop the safety stack here for now.
+**Shipped:** `core/safety/` implements a from-scratch Aho-Corasick automaton (trie + failure links, built once as a static instance) matching ~25 named markers across three categories (`chemical-weapons`, `biological-weapons`, `explosives`) — case-insensitive substring matching, no synthesis details/ratios/steps in the pattern list itself. Standalone, zero dependency on `core/inference`/llama.cpp, exercised via its own `pocketchat_safety_cli` REPL tool. Wired into Android via a JNI bridge (`nativeSafetyCheck`/`nativeSafetyLastCategory`) and a `PocketChatSafety` Kotlin wrapper, called synchronously in `ChatViewModel.sendMessage()` before the prompt is appended to the transcript or sent to the model. Verified: benign prompts pass clean, known markers (including mixed-case) are blocked with the correct category, and near-miss non-adjacent-word cases correctly stay clean (genuine substring matching, not fuzzy/proximity).
 
 ### FR-016 — iOS app
 Swift/SwiftUI port of the same UI concepts, calling `core/` via an XCFramework.
@@ -259,7 +260,7 @@ Track and display, per model, a rolling average of time-to-first-token and token
 | NFR-010 | Bounded KV-cache memory + graceful context-window handling | Done | 1 | PRO-5 |
 | NFR-011 | Thermal/battery-aware generation throttling, with a specific status indicator | Planned | 2 | PRO-8 |
 | NFR-012 | Resilience to Android background kill (BOOM), full transcript preserved | Planned | 2 | PRO-8 |
-| NFR-013 | Native on-device content-safety, tier 1 only for now | Planned | new | PRO-7 |
+| NFR-013 | Native on-device content-safety, tier 1 only for now | Done | new | PRO-7 |
 | NFR-014 | Minimum device spec floor: ~3GB usable RAM, soft warning only | Done | 0 | — |
 | NFR-015 | Encryption at rest for models and memory files | Idea | — | PRO-38 |
 | NFR-016 | Visual-only UI, no dedicated screen-reader support | Done (by decision) | — | — |
@@ -322,6 +323,7 @@ Conversation state — the full visible chat transcript, not just extracted memo
 ### NFR-013 — Native on-device content-safety, tier 1 only for now
 FR-015's deterministic filter is the current ceiling of the safety stack, always-on and non-toggleable in every build (no store-vs-sideload split). Later tiers (guard classifier model, representation-level circuit breaking, weight-level unlearning) are explicitly not committed to — revisit only if a real incident or app-store rejection makes tier 1 insufficient, not on a schedule.
 **Why:** `docs/research-consumer-demand-and-engineering.md` confirms Apple's App Store Review Guidelines require content moderation for generative-AI apps, and for a local-inference app (no server to point to) that moderation has to be native and has to actually hold — a user-toggleable filter would likely fail review since it's defeatable. `docs/research-sovereign-on-device-llms.md`'s survival-vs-weaponization overlap makes tier 1 a genuine dual-use mitigation, not just a compliance checkbox — see FR-015 for why this doesn't conflict with the uncensored-specialist archetype. Tier 2+ (e.g. Llama Guard 3-1B-INT4 at ~440MB) was explicitly weighed against NFR-003's size budget and declined for now.
+**Shipped:** see FR-015 for implementation detail — this NFR is the "stop here for now" ceiling decision, not separate code.
 
 ### NFR-014 — Minimum device spec floor: ~3GB usable RAM, soft warning only
 The lowest supported tier targets devices with roughly 3GB usable RAM (~6-7 year old hardware). This is a recommendation, not an enforced gate — the app doesn't refuse to run below the floor, consistent with how model-tier recommendations already work (FR-004).

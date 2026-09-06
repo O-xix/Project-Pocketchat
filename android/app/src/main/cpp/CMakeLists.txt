@@ -20,5 +20,6 @@ target_link_libraries(pocketchat_jni
         # core/CMakeLists.txt), but link both explicitly for clarity.
         pocketchat_inference
         pocketchat_memory
+        pocketchat_safety
         log
 )

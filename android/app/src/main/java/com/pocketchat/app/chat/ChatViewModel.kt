@@ -9,6 +9,7 @@ import com.pocketchat.app.inference.PocketChatContext
 import com.pocketchat.app.inference.PocketChatException
 import com.pocketchat.app.inference.PocketChatMemory
 import com.pocketchat.app.inference.PocketChatModel
+import com.pocketchat.app.inference.PocketChatSafety
 import com.pocketchat.app.models.BundledModel
 import com.pocketchat.app.models.MemoryStorage
 import com.pocketchat.app.models.ModelStorage
@@ -132,6 +133,20 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val trimmed = text.trim()
         val ctx = context
         if (trimmed.isEmpty() || _uiState.value.isGenerating || ctx == null) return
+
+        // Tier 1 of the defense-in-depth safety stack (FR-015/NFR-013): a
+        // deterministic lexical check, cheap enough to run synchronously here
+        // before anything is appended to the transcript or sent to the model.
+        // Deeper UX (distinct visual treatment, softer false-positive wording)
+        // is deliberately deferred to PRO-30, which is blocked on this check
+        // existing at all — don't expand this beyond a plain error message.
+        val safety = PocketChatSafety.check(trimmed)
+        if (safety.blocked) {
+            _uiState.update {
+                it.copy(error = "prompt blocked — matched a restricted content pattern (${safety.category})")
+            }
+            return
+        }
 
         _uiState.update {
             it.copy(

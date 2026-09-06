@@ -8,6 +8,7 @@
 
 #include "pocketchat_inference.h"
 #include "pocketchat_memory.h"
+#include "pocketchat_safety.h"
 
 #define LOG_TAG "PocketChatJNI"
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
@@ -253,6 +254,19 @@ Java_com_pocketchat_app_inference_PocketChatEngine_nativeMemoryUpdateSession(
 JNIEXPORT jstring JNICALL
 Java_com_pocketchat_app_inference_PocketChatEngine_nativeMemoryLastError(JNIEnv * env, jclass) {
     return env->NewStringUTF(pc_memory_last_error());
+}
+
+JNIEXPORT jint JNICALL
+Java_com_pocketchat_app_inference_PocketChatEngine_nativeSafetyCheck(JNIEnv * env, jclass, jstring j_text) {
+    const char * text = env->GetStringUTFChars(j_text, nullptr);
+    const int rc = pc_safety_check(text);
+    env->ReleaseStringUTFChars(j_text, text);
+    return rc;
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_pocketchat_app_inference_PocketChatEngine_nativeSafetyLastCategory(JNIEnv * env, jclass) {
+    return env->NewStringUTF(pc_safety_last_category());
 }
 
 } // extern "C"

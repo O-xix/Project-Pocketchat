@@ -33,6 +33,13 @@ add_library(pocketchat_memory STATIC
 target_include_directories(pocketchat_memory PUBLIC memory)
 target_link_libraries(pocketchat_memory PUBLIC pocketchat_inference)
 
+# Standalone: no dependency on pocketchat_inference/llama.cpp, so it stays
+# usable (and testable) even before a model is loaded.
+add_library(pocketchat_safety STATIC
+    safety/pocketchat_safety.cpp
+)
+target_include_directories(pocketchat_safety PUBLIC safety)
+
 option(POCKETCHAT_BUILD_CLI "Build the standalone chat_cli/memory_cli test tools" ON)
 if(POCKETCHAT_BUILD_CLI)
     add_executable(pocketchat_chat_cli tools/chat_cli.cpp)
@@ -40,4 +47,7 @@ if(POCKETCHAT_BUILD_CLI)
 
     add_executable(pocketchat_memory_cli tools/memory_cli.cpp)
     target_link_libraries(pocketchat_memory_cli PRIVATE pocketchat_memory)
+
+    add_executable(pocketchat_safety_cli tools/safety_cli.cpp)
+    target_link_libraries(pocketchat_safety_cli PRIVATE pocketchat_safety)
 endif()
