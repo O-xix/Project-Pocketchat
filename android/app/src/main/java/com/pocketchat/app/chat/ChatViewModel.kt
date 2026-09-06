@@ -108,8 +108,22 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             model?.close()
             context = null
             model = null
-            lastMemoryUpdateIndex = 0
-            _uiState.update { ChatUiState(modelStatus = ModelStatus.Loading) }
+            // The visible transcript (and lastMemoryUpdateIndex, how much of it
+            // is already folded into memory) survives the switch — only the
+            // native context resets. The new context's KV cache starts empty,
+            // so the next sendMessage() call — which always sends the full
+            // history, not just the newest message — replays every preserved
+            // message into the newly loaded model as a side effect of the
+            // existing prev_len-tracking logic. That's what makes the switch
+            // actually carry the conversation forward, not just display it.
+            _uiState.update {
+                it.copy(
+                    modelStatus = ModelStatus.Loading,
+                    streamingResponse = "",
+                    memoryUpdateProgress = null,
+                    error = null,
+                )
+            }
             loadModel()
         }
     }
