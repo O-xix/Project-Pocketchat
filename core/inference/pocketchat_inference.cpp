@@ -35,6 +35,31 @@ void set_error(std::string msg) {
     g_last_error = std::move(msg);
 }
 
+// Most recent GGML_LOG_LEVEL_ERROR line from llama.cpp's own logger (see
+// pc_init below) -- llama.cpp usually knows exactly why a load/context-create
+// call failed (bad GGUF magic, unsupported architecture, an allocation size),
+// far more specifically than the generic wrapper message the caller would
+// otherwise be stuck with. Cleared before each risky call and folded into the
+// error on failure; left untouched on success.
+thread_local std::string g_last_log_error;
+
+std::string trim_trailing_newline(const char * text) {
+    std::string s(text);
+    while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) {
+        s.pop_back();
+    }
+    return s;
+}
+
+// Appends `: <detail>` to `msg` if a specific llama.cpp log error was captured
+// since it was last cleared, otherwise returns `msg` unchanged.
+std::string with_log_detail(std::string msg) {
+    if (!g_last_log_error.empty()) {
+        msg += ": " + g_last_log_error;
+    }
+    return msg;
+}
+
 std::atomic<bool> g_initialized{false};
 
 // Runs the decode/sample loop for `prompt` against `pc_ctx`, streaming generated
@@ -99,8 +124,16 @@ int run_generation(
             break;
         }
 
-        if (llama_decode(ctx, batch) != 0) {
-            set_error("llama_decode failed");
+        const int decode_rc = llama_decode(ctx, batch);
+        if (decode_rc != 0) {
+            // decode_rc meanings, per llama.h: 1 = no free KV slot for this batch
+            // (the NFR-010 fit-check above should normally prevent this); < -1 =
+            // a fatal decode error with no more specific reason exposed by the API.
+            if (decode_rc == 1) {
+                set_error("llama_decode: no free KV cache slot for this batch (try a smaller n_ctx or shorter prompt)");
+            } else {
+                set_error("llama_decode failed (code " + std::to_string(decode_rc) + ")");
+            }
             rc = -3;
             break;
         }
@@ -166,6 +199,13 @@ void pc_init(void) {
     if (g_initialized.compare_exchange_strong(expected, true)) {
         llama_log_set([](enum ggml_log_level level, const char * text, void *) {
             if (level >= GGML_LOG_LEVEL_ERROR) {
+                // A single failure (e.g. a missing file) logs a whole chain of
+                // increasingly generic wrapper errors as it propagates up through
+                // llama.cpp's loader layers -- keep the first (most specific,
+                // usually the actual root cause) rather than the last.
+                if (g_last_log_error.empty()) {
+                    g_last_log_error = trim_trailing_newline(text);
+                }
                 fprintf(stderr, "%s", text);
             }
         }, nullptr);
@@ -190,9 +230,10 @@ pc_model * pc_model_load(const char * path, int32_t n_gpu_layers) {
     llama_model_params params = llama_model_default_params();
     params.n_gpu_layers = n_gpu_layers;
 
+    g_last_log_error.clear();
     llama_model * m = llama_model_load_from_file(path, params);
     if (!m) {
-        set_error(std::string("failed to load model from ") + path);
+        set_error(with_log_detail(std::string("failed to load model from ") + path));
         return nullptr;
     }
 
@@ -236,9 +277,10 @@ pc_context * pc_context_create(pc_model * model, uint32_t n_ctx, int32_t n_threa
     params.n_threads       = nt;
     params.n_threads_batch = nt;
 
+    g_last_log_error.clear();
     llama_context * lc = llama_init_from_model(model->model, params);
     if (!lc) {
-        set_error("failed to create llama_context");
+        set_error(with_log_detail("failed to create llama_context"));
         return nullptr;
     }
 

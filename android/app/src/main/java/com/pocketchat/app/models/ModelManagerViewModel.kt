@@ -214,8 +214,8 @@ class ModelManagerViewModel(app: Application) : AndroidViewModel(app) {
 
             val code = connection.responseCode
             if (code !in 200..299) {
-                if (code in 400..499 && code != 429) throw PermanentDownloadFailure("HTTP $code")
-                throw IOException("HTTP $code")
+                if (code in 400..499 && code != 429) throw PermanentDownloadFailure(httpErrorMessage(code))
+                throw IOException(httpErrorMessage(code))
             }
 
             val startBytes = if (resuming) existingBytes else 0L
@@ -246,7 +246,7 @@ class ModelManagerViewModel(app: Application) : AndroidViewModel(app) {
             updateRowStatus(entry.id, ModelRowStatus.Downloading(downloaded, totalBytes))
 
             if (!tempFile.renameTo(finalFile)) {
-                throw IOException("failed to finalize download")
+                throw IOException("failed to move downloaded file into place — check available storage space")
             }
         } finally {
             connection?.disconnect()
@@ -265,6 +265,20 @@ private fun detectTotalRamBytes(context: Context): Long {
     val info = ActivityManager.MemoryInfo()
     activityManager.getMemoryInfo(info)
     return info.totalMem
+}
+
+/** A bare status code isn't self-explanatory to someone who isn't reading HTTP specs. */
+private fun httpErrorMessage(code: Int): String {
+    val detail = when (code) {
+        401, 403 -> "access denied — the model link may require authentication"
+        404 -> "file not found on server — the download link may be broken or removed"
+        410 -> "file no longer available on server"
+        408 -> "server timed out waiting for the request"
+        429 -> "rate-limited by server — too many requests"
+        in 500..599 -> "server error — try again later"
+        else -> "unexpected server response"
+    }
+    return "HTTP $code — $detail"
 }
 
 private fun isNetworkAvailable(context: Context): Boolean {
