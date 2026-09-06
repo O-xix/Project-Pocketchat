@@ -29,7 +29,7 @@ data class MemoryViewerUiState(
 )
 
 /**
- * profile.txt and summaries/*.txt are model-authored (see core/memory/) and
+ * profile.txt and every summary under summaries/ are model-authored (see core/memory/) and
  * stay purely read-only here — no path in this file edits or overwrites
  * them. FR-023 amends that boundary narrowly: a user-authored annotation is
  * a separate, additive `<summary>.annotation.txt` sibling file, never merged
