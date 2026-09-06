@@ -258,6 +258,59 @@ Java_com_pocketchat_app_inference_PocketChatEngine_nativeMemoryLastError(JNIEnv 
     return env->NewStringUTF(pc_memory_last_error());
 }
 
+// FR-026: flattened as [timestamp0, content0, annotation0, timestamp1, ...]
+// (3 strings per result) rather than an array of a dedicated result class —
+// matches this bridge's existing style of marshaling parallel primitive
+// arrays instead of constructing JVM objects from native code.
+JNIEXPORT jobjectArray JNICALL
+Java_com_pocketchat_app_inference_PocketChatEngine_nativeMemorySearch(
+        JNIEnv * env, jclass, jstring j_memory_dir, jstring j_query, jint max_results) {
+    const char * memory_dir = env->GetStringUTFChars(j_memory_dir, nullptr);
+    const char * query = env->GetStringUTFChars(j_query, nullptr);
+
+    pc_memory_search_result * results = nullptr;
+    size_t count = 0;
+    const int rc = pc_memory_search(memory_dir, query, max_results, &results, &count);
+
+    env->ReleaseStringUTFChars(j_query, query);
+    env->ReleaseStringUTFChars(j_memory_dir, memory_dir);
+
+    const jclass string_class = env->FindClass("java/lang/String");
+    if (rc != 0) {
+        LOGW("nativeMemorySearch failed: %s", pc_memory_last_error());
+        return env->NewObjectArray(0, string_class, nullptr);
+    }
+
+    const jobjectArray out = env->NewObjectArray((jsize) (count * 3), string_class, nullptr);
+    for (size_t i = 0; i < count; i++) {
+        env->SetObjectArrayElement(out, (jsize) (i * 3),     env->NewStringUTF(results[i].timestamp));
+        env->SetObjectArrayElement(out, (jsize) (i * 3 + 1), env->NewStringUTF(results[i].content));
+        env->SetObjectArrayElement(out, (jsize) (i * 3 + 2), env->NewStringUTF(results[i].annotation));
+    }
+    pc_memory_free_search_results(results, count);
+    return out;
+}
+
+JNIEXPORT void JNICALL
+Java_com_pocketchat_app_inference_PocketChatEngine_nativeMemoryDeleteSummary(
+        JNIEnv * env, jclass, jstring j_memory_dir, jstring j_timestamp) {
+    const char * memory_dir = env->GetStringUTFChars(j_memory_dir, nullptr);
+    const char * timestamp = env->GetStringUTFChars(j_timestamp, nullptr);
+    pc_memory_delete_summary(memory_dir, timestamp);
+    env->ReleaseStringUTFChars(j_timestamp, timestamp);
+    env->ReleaseStringUTFChars(j_memory_dir, memory_dir);
+}
+
+JNIEXPORT void JNICALL
+Java_com_pocketchat_app_inference_PocketChatEngine_nativeMemoryDeleteProfileFact(
+        JNIEnv * env, jclass, jstring j_memory_dir, jstring j_fact_text) {
+    const char * memory_dir = env->GetStringUTFChars(j_memory_dir, nullptr);
+    const char * fact_text = env->GetStringUTFChars(j_fact_text, nullptr);
+    pc_memory_delete_profile_fact(memory_dir, fact_text);
+    env->ReleaseStringUTFChars(j_fact_text, fact_text);
+    env->ReleaseStringUTFChars(j_memory_dir, memory_dir);
+}
+
 JNIEXPORT jint JNICALL
 Java_com_pocketchat_app_inference_PocketChatEngine_nativeSafetyCheck(JNIEnv * env, jclass, jstring j_text) {
     const char * text = env->GetStringUTFChars(j_text, nullptr);

@@ -37,6 +37,46 @@ extern "C" {
 char * pc_memory_build_context(const char * memory_dir, const char * query, int max_summaries, size_t max_chars);
 void pc_memory_free_string(char * s);
 
+// FR-026: one summary matched by pc_memory_search(). `timestamp` is the
+// summary's base filename (e.g. "20260101-090000", no extension) — pass it
+// back to pc_memory_delete_summary() to delete this entry. `annotation` is
+// "" when the summary has none (FR-023).
+typedef struct {
+    char * timestamp;
+    char * content;
+    char * annotation;
+} pc_memory_search_result;
+
+// FR-026: direct user-facing search across memory_dir/summaries/, ranked by
+// the same FTS5/BM25 relevance pc_memory_build_context uses (including
+// FR-023's annotation weighting) — but unlike that function, this does NOT
+// fall back to recency when there's no strong match. A search box with zero
+// results should say so, not silently show unrelated recent entries.
+// On success (0), *out_results/*out_count describe up to `max_results`
+// matches (best first); *out_count may legitimately be 0. Free with
+// pc_memory_free_search_results(). Returns negative on error (invalid
+// arguments or allocation failure) — see pc_memory_last_error().
+int pc_memory_search(
+    const char * memory_dir, const char * query, int max_results,
+    pc_memory_search_result ** out_results, size_t * out_count);
+
+void pc_memory_free_search_results(pc_memory_search_result * results, size_t count);
+
+// FR-033: permanently deletes memory_dir/summaries/<timestamp>.txt and its
+// .annotation.txt sibling if present (an annotation can't outlive the
+// summary it's attached to). Deleting an already-gone entry is not an
+// error. Returns 0 on success, negative on invalid arguments.
+int pc_memory_delete_summary(const char * memory_dir, const char * timestamp);
+
+// FR-033: deletes exactly the first line of memory_dir/profile.txt whose
+// trimmed text exactly matches trimmed `fact_text` (profile.txt is one
+// durable fact per line — see pc_memory_update_session's extraction prompt).
+// A caller should re-read profile.txt after this rather than deleting by
+// remembered line position, since positions shift once a line is removed.
+// Not finding a match is not an error. Returns 0 on success, negative on
+// invalid arguments.
+int pc_memory_delete_profile_fact(const char * memory_dir, const char * fact_text);
+
 typedef enum {
     PC_MEMORY_PHASE_EXTRACTING_FACTS = 0,
     PC_MEMORY_PHASE_SUMMARIZING = 1,

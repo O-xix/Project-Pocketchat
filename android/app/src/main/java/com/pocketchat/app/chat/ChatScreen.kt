@@ -36,6 +36,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.pocketchat.app.inference.ChatMessage
 import com.pocketchat.app.inference.MemoryPhase
 import com.pocketchat.app.power.ThrottleReason
+import com.pocketchat.app.ui.ConfirmableMenuItem
 import com.pocketchat.app.ui.TermBackground
 import com.pocketchat.app.ui.TermDim
 import com.pocketchat.app.ui.TermError
@@ -61,6 +62,9 @@ fun ChatScreen(
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             TerminalMenuItem("[models]", onClick = onOpenModelManager)
             TerminalMenuItem("[memory]", onClick = onOpenMemoryViewer)
+            // FR-029: folds whatever's unsummarized into memory before wiping
+            // the transcript — see ChatViewModel.clearChat()'s doc comment.
+            ConfirmableMenuItem("[clear]", "[confirm clear]", onConfirmed = viewModel::clearChat)
         }
         Spacer(Modifier.height(4.dp))
         MessageScrollback(modifier = Modifier.weight(1f), uiState = uiState)

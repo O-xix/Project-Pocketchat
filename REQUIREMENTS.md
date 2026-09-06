@@ -35,14 +35,14 @@ Living spec. Every requirement gets a stable, unique code (`FR-NNN` / `NFR-NNN`)
 | FR-023 | User-authored annotations on summaries | Done | 3 | PRO-23 |
 | FR-024 | Configurable summary scope (opt-in/threshold, not every session) | Idea | 3 | PRO-12 |
 | FR-025 | System-level notification for summary-ready review | Idea | 3 | PRO-13 |
-| FR-026 | Manual search box in memory viewer | Idea | 3 | PRO-24 |
+| FR-026 | Manual search box in memory viewer | Done | 3 | PRO-24 |
 | FR-027 | Fact history/versioning for profile.txt | Idea | 3 | PRO-14 |
 | FR-028 | Stop generation (ESC/stop button), edit-and-resubmit | Idea | 1, 2 | PRO-25 |
-| FR-029 | Clear/reset visible chat, with pre-clear summary | Idea | 2, 3 | PRO-26 |
+| FR-029 | Clear/reset visible chat, with pre-clear summary | Done | 2, 3 | PRO-26 |
 | FR-030 | Regenerate last response | Idea (uncommitted) | 2 | — |
 | FR-031 | Custom system prompt / persona override | Idea | 2 | PRO-15 |
 | FR-032 | Dedicated Settings screen | Idea | 2 | PRO-27 |
-| FR-033 | Selective memory deletion (individual summary/fact) | Idea | 3 | PRO-28 |
+| FR-033 | Selective memory deletion (individual summary/fact) | Done | 3 | PRO-28 |
 | FR-034 | Model switch replays transcript as real context, not just display | Done | 2 | PRO-29 |
 | FR-035 | Specific explanation shown when a prompt is safety-blocked | Idea | new | PRO-30 |
 | FR-036 | First-launch onboarding/setup screen | Idea (deferred) | 2 | PRO-16 |
@@ -161,17 +161,18 @@ Lets the user attach their own note to a summary — stored as a separate, clear
 ### FR-024 — Configurable summary scope
 Future control over which conversations actually get summarized — e.g. a length/turn-count threshold, or letting the user opt a specific conversation in/out — instead of FR-022's review prompt firing after every single session regardless of how trivial.
 **Why:** raised as a real risk (review fatigue on short/trivial chats) but deliberately not designed in detail yet — ship FR-022 firing on every session first, see how it actually feels in use, then shape this based on that evidence rather than guessing at a threshold now.
-**Status:** `Idea`, ticketed ahead of implementation per explicit request — see PRO-12.
+**Status:** `Idea`, ticketed ahead of implementation per explicit request — see PRO-12. **Still not started as of the FR-026/FR-029/FR-033 pass:** PRO-12's own ticket text says "do not start until FR-022 has shipped and there's real signal that 'every session' is actually noisy in practice" — FR-022 has shipped, but no real usage exists yet in this environment (no device, no users) to produce that signal. Building a threshold now would be guessing at the exact number this ticket was written to avoid guessing at.
 
 ### FR-025 — System-level notification for summary-ready review
 Upgrade FR-022's in-app-only prompt to a real Android system notification (status bar), so the user can review a summary even after leaving the app.
 **Why:** in-app is sufficient for now since memory updates already run inline while the app is open (`maybeUpdateMemory` in `ChatViewModel`), but a system notification needs `POST_NOTIFICATIONS` permission handling and is real platform-integration work — deliberately sequenced after the in-app version proves the review flow is worth having at all.
-**Status:** `Idea`, ticketed ahead of implementation per explicit request — see PRO-13.
+**Status:** `Idea`, ticketed ahead of implementation per explicit request — see PRO-13. **Still not started as of the FR-026/FR-029/FR-033 pass:** same reasoning as FR-024 — this ticket's own text sequences it after the in-app version "proves the review flow is worth having at all," which needs real usage, not just FR-022 existing.
 
 ### FR-026 — Manual search box in memory viewer
 A real search input in `MemoryViewerScreen` (FR-011), letting the user directly look up "that conversation about X" — distinct from FR-013, which only changes what the *model* automatically pulls into its own context. Reuses the same FTS5 index FR-013 builds.
 **Why:** this is the actual answer to "how would a user find an old conversation" — FR-013 alone never surfaces anything to the user directly, it only changes the model's behavior. Without this, the user has no way to search their own history at all, only browse it chronologically (which the viewer already supports).
 **Depends on:** FR-013's FTS5 index existing first — this is a UI layer on top of it, not a separate index.
+**Shipped:** new `pc_memory_search`/`pc_memory_free_search_results` (core/memory) reuse `relevant_summary_files()` (FR-013/FR-023's FTS5+BM25 ranking, including annotation weighting) but — unlike `pc_memory_build_context` — never fall back to recency: a search box silently substituting unrelated recent entries would look broken, so zero matches is reported as zero matches. `MemoryViewerScreen.kt` gained a live search box at the top; a non-blank query replaces the normal profile/summaries view with search results (using the same `SummaryEntryRow`, so annotation editing and deletion both work on search results too), an empty query reverts to the normal view. Verified locally via `pocketchat_memory_cli -d <dir> -s <query>` (new flag, no model needed): a topical query returns exactly the matching summary, an unrelated query returns zero results.
 
 ### FR-027 — Fact history/versioning for profile.txt
 Track changes to facts in `profile.txt` over time (e.g. a job change overwriting an old entry) instead of silently overwriting with no record of what changed or when.
@@ -186,6 +187,7 @@ Interrupt an in-progress generation via a stop button or ESC, matching the Claud
 ### FR-029 — Clear/reset visible chat, with pre-clear summary
 A manual `[clear]`-style action (alongside the existing `[models]`/`[memory]` menu items) that resets the visible scrollback. Before clearing, it runs the same summarization pipeline as a natural session end (FR-008), including FR-022's review prompt, so nothing is lost from memory just because the screen was reset.
 **Why:** the single-continuous-chat decision assumed memory carries continuity across sessions, but there was no way to deliberately close out a topic and start fresh on-screen — the chat would just grow forever with no user-facing reset, relying entirely on NFR-010's under-the-hood truncation. Triggering a summary first keeps this consistent with FR-008/FR-022 rather than introducing a second, un-summarized way for a conversation to end.
+**Shipped:** `ChatViewModel.maybeUpdateMemory()` was split into a threshold check plus `forceMemoryUpdate()` (the actual pipeline, unconditional) so `clearChat()` can force a final update regardless of how many messages have accumulated since the last one, then resets the native context, clears the visible transcript and its on-disk copy (NFR-012), and resets `lastMemoryUpdateIndex`. A `[clear]` menu item (`ChatScreen.kt`) triggers it through the new shared `ConfirmableMenuItem` (`ui/Terminal.kt`) two-tap pattern rather than deleting on a single tap. **No modal confirmation dialog:** the pre-clear summary already means nothing discussed is truly lost, just no longer on-screen, so the two-tap inline confirm was judged sufficient for now — a fuller NFR-018-style dialog (not yet built) can replace it later if that ticket wants consistency across more destructive actions.
 
 ### FR-030 — Regenerate last response
 Re-run generation for the last assistant response with a new sampling seed, discarding the previous one.
@@ -203,7 +205,8 @@ A `[settings]` menu item (alongside the existing `[models]`/`[memory]` header it
 ### FR-033 — Selective memory deletion
 Delete one specific summary or profile fact directly, without exporting/wiping everything (FR-019) or disabling memory entirely (FR-020).
 **Why:** a "right to be forgotten" at the item level — if one captured fact or summary turns out to be sensitive, wrong, or just unwanted, the user shouldn't have to choose between living with it and nuking their entire memory history to get rid of it.
-**Interacts with:** FR-013/FR-026 (FTS5 index) — deleting a source `.txt` needs to also remove it from the derived search index, not just leave a stale entry behind.
+**Interacts with:** FR-013/FR-026 (FTS5 index) — deleting a source `.txt` needs to also remove it from the derived search index, not just leave a stale entry behind. **Already satisfied by construction:** because FR-013's index is a throwaway in-memory structure rebuilt fresh on every single call (never persisted — see FR-013's Shipped note), there is no stale index to clean up; deleting the source file is automatically reflected the next time anything searches or builds context. No extra code was needed for this.
+**Shipped:** new `pc_memory_delete_summary(memory_dir, timestamp)` removes a summary's `.txt` and its `.annotation.txt` sibling together (an orphaned annotation with no parent summary makes no sense); new `pc_memory_delete_profile_fact(memory_dir, fact_text)` removes exactly the first `profile.txt` line whose trimmed text matches (profile.txt is one durable fact per line by construction — see `pc_memory_update_session`'s extraction prompt). Both treat "already gone"/"not found" as success, not an error. `MemoryViewerScreen.kt` shows a `[delete]` action per summary and per profile fact, using the new shared `ConfirmableMenuItem` two-tap pattern (see FR-029's Shipped note) rather than deleting on a single tap — judged warranted here specifically (unlike FR-029) because deletion is genuinely irreversible with no summary-based safety net. Verified locally: deleting a summary removes it from a subsequent `pc_memory_search`; deleting one profile fact by exact text leaves the other lines untouched.
 
 ### FR-034 — Model switch replays transcript as real context, not just display
 When switching the active model (FR-003), the existing visible messages must be replayed into the newly loaded model's actual context (subject to its context window), not just left visually present in the Kotlin UI state while the new native context starts with no knowledge of them.

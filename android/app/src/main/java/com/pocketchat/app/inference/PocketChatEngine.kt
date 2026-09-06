@@ -63,6 +63,13 @@ internal object PocketChatEngine {
 
     @JvmStatic external fun nativeMemoryLastError(): String
 
+    /** FR-026: flattened 3-strings-per-result (timestamp, content, annotation) — see PocketChatMemory.search(). */
+    @JvmStatic external fun nativeMemorySearch(memoryDir: String, query: String, maxResults: Int): Array<String>
+
+    /** FR-033 */
+    @JvmStatic external fun nativeMemoryDeleteSummary(memoryDir: String, timestamp: String)
+    @JvmStatic external fun nativeMemoryDeleteProfileFact(memoryDir: String, factText: String)
+
     @JvmStatic external fun nativeSafetyCheck(text: String): Int
     @JvmStatic external fun nativeSafetyLastCategory(): String
 }

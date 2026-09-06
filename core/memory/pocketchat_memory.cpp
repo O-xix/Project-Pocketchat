@@ -6,6 +6,7 @@
 #include <cctype>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <filesystem>
@@ -183,6 +184,24 @@ std::string annotation_for(const fs::path & summary_file) {
     return trim(read_file(summary_file.parent_path() / (summary_file.stem().string() + kAnnotationSuffix)));
 }
 
+// Every real summary file under `summaries_dir`, sorted chronologically
+// (filenames are zero-padded UTC timestamps, so a lexical sort is also a
+// chronological one). Shared by pc_memory_build_context and pc_memory_search
+// so both see exactly the same corpus and exclusion rules.
+std::vector<fs::path> list_summary_files(const fs::path & summaries_dir) {
+    std::vector<fs::path> files;
+    std::error_code ec;
+    if (fs::exists(summaries_dir, ec) && fs::is_directory(summaries_dir, ec)) {
+        for (const auto & entry : fs::directory_iterator(summaries_dir, ec)) {
+            if (entry.is_regular_file() && entry.path().extension() == ".txt" && !is_annotation_file(entry.path())) {
+                files.push_back(entry.path());
+            }
+        }
+    }
+    std::sort(files.begin(), files.end());
+    return files;
+}
+
 // A summary's annotation is weighted this many times higher than its own
 // summary text when ranking FTS5 matches — a user-flagged note is presumably
 // the highest-signal text for future recall (FR-023), so it should be able
@@ -266,19 +285,7 @@ char * pc_memory_build_context(const char * memory_dir, const char * query, int 
         out << "What you remember about the user:\n" << profile << "\n";
     }
 
-    const fs::path summaries_dir = dir / "summaries";
-    std::vector<fs::path> files;
-    std::error_code ec;
-    if (fs::exists(summaries_dir, ec) && fs::is_directory(summaries_dir, ec)) {
-        for (const auto & entry : fs::directory_iterator(summaries_dir, ec)) {
-            if (entry.is_regular_file() && entry.path().extension() == ".txt" && !is_annotation_file(entry.path())) {
-                files.push_back(entry.path());
-            }
-        }
-    }
-    // Filenames are zero-padded UTC timestamps (see timestamp_filename), so a
-    // lexical sort is also a chronological one.
-    std::sort(files.begin(), files.end());
+    const std::vector<fs::path> files = list_summary_files(dir / "summaries");
 
     // FR-013: prefer summaries ranked by FTS5/BM25 relevance to `query` over
     // pure recency, falling back to the original recency-window selection
@@ -324,6 +331,97 @@ char * pc_memory_build_context(const char * memory_dir, const char * query, int 
 
 void pc_memory_free_string(char * s) {
     std::free(s);
+}
+
+int pc_memory_search(
+    const char * memory_dir, const char * query, int max_results,
+    pc_memory_search_result ** out_results, size_t * out_count) {
+    if (!memory_dir || !query || !out_results || !out_count) {
+        set_error("pc_memory_search: invalid arguments");
+        return -1;
+    }
+    *out_results = nullptr;
+    *out_count = 0;
+
+    const fs::path dir(memory_dir);
+    const std::vector<fs::path> files = list_summary_files(dir / "summaries");
+    // Deliberately no recency fallback here (unlike pc_memory_build_context):
+    // a user typing into a search box and getting unrelated recent entries
+    // back would look like a broken search, not a helpful one — an empty
+    // result set is the honest answer to "nothing matched."
+    const std::vector<fs::path> matches = relevant_summary_files(files, query, max_results);
+    if (matches.empty()) return 0;
+
+    auto * results = static_cast<pc_memory_search_result *>(
+        std::calloc(matches.size(), sizeof(pc_memory_search_result)));
+    if (!results) {
+        set_error("pc_memory_search: allocation failed");
+        return -1;
+    }
+    for (size_t i = 0; i < matches.size(); i++) {
+        const std::string timestamp  = matches[i].stem().string();
+        const std::string content    = trim(read_file(matches[i]));
+        const std::string annotation = annotation_for(matches[i]);
+        results[i].timestamp  = strdup(timestamp.c_str());
+        results[i].content    = strdup(content.c_str());
+        results[i].annotation = strdup(annotation.c_str());
+    }
+    *out_results = results;
+    *out_count = matches.size();
+    return 0;
+}
+
+void pc_memory_free_search_results(pc_memory_search_result * results, size_t count) {
+    if (!results) return;
+    for (size_t i = 0; i < count; i++) {
+        std::free(results[i].timestamp);
+        std::free(results[i].content);
+        std::free(results[i].annotation);
+    }
+    std::free(results);
+}
+
+int pc_memory_delete_summary(const char * memory_dir, const char * timestamp) {
+    if (!memory_dir || !timestamp) {
+        set_error("pc_memory_delete_summary: invalid arguments");
+        return -1;
+    }
+    const fs::path summaries_dir = fs::path(memory_dir) / "summaries";
+    std::error_code ec;
+    // Deleting an already-gone file isn't an error -- the caller's goal
+    // ("this summary no longer exists") is already satisfied either way.
+    fs::remove(summaries_dir / (std::string(timestamp) + ".txt"), ec);
+    fs::remove(summaries_dir / (std::string(timestamp) + kAnnotationSuffix), ec);
+    return 0;
+}
+
+int pc_memory_delete_profile_fact(const char * memory_dir, const char * fact_text) {
+    if (!memory_dir || !fact_text) {
+        set_error("pc_memory_delete_profile_fact: invalid arguments");
+        return -1;
+    }
+    const fs::path profile_path = fs::path(memory_dir) / "profile.txt";
+    const std::string content = read_file(profile_path);
+    if (content.empty()) return 0;
+
+    const std::string target = trim(std::string(fact_text));
+    std::istringstream in(content);
+    std::ostringstream out;
+    std::string line;
+    bool removed = false;
+    while (std::getline(in, line)) {
+        // Only the first match is dropped -- if a duplicate line somehow
+        // exists, "delete this one fact" shouldn't silently delete both.
+        if (!removed && trim(line) == target) {
+            removed = true;
+            continue;
+        }
+        out << line << "\n";
+    }
+    if (removed) {
+        write_file(profile_path, out.str());
+    }
+    return 0;
 }
 
 int pc_memory_update_session(

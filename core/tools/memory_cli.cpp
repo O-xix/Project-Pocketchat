@@ -14,7 +14,10 @@
 namespace {
 
 void print_usage(const char * argv0) {
-    fprintf(stderr, "usage: %s -m model.gguf -d memory_dir [-c n_ctx] [-t n_threads] [-ngl n_gpu_layers]\n", argv0);
+    fprintf(stderr,
+        "usage: %s -m model.gguf -d memory_dir [-c n_ctx] [-t n_threads] [-ngl n_gpu_layers]\n"
+        "       %s -d memory_dir -s <query>   (FR-026 search test, no model needed)\n",
+        argv0, argv0);
 }
 
 int collect_and_print(const char * piece, void * user_data) {
@@ -46,6 +49,7 @@ int print_memory_progress(pc_memory_phase phase, const char * piece, void * user
 int main(int argc, char ** argv) {
     std::string model_path;
     std::string memory_dir;
+    std::string search_query;
     uint32_t    n_ctx        = 0;
     int32_t     n_threads    = -1;
     int32_t     n_gpu_layers = 0;
@@ -62,6 +66,7 @@ int main(int argc, char ** argv) {
 
         if      (arg == "-m")   model_path   = next();
         else if (arg == "-d")   memory_dir   = next();
+        else if (arg == "-s")   search_query = next();
         else if (arg == "-c")   n_ctx        = (uint32_t) std::stoul(next());
         else if (arg == "-t")   n_threads    = std::stoi(next());
         else if (arg == "-ngl") n_gpu_layers = std::stoi(next());
@@ -71,7 +76,32 @@ int main(int argc, char ** argv) {
         }
     }
 
-    if (model_path.empty() || memory_dir.empty()) {
+    if (memory_dir.empty()) {
+        print_usage(argv[0]);
+        return 1;
+    }
+
+    // FR-026: search doesn't touch the model at all, so it's handled as its
+    // own early-exit path rather than folding it into the chat-session flow
+    // below (which does require one).
+    if (!search_query.empty()) {
+        pc_memory_search_result * results = nullptr;
+        size_t count = 0;
+        const int rc = pc_memory_search(memory_dir.c_str(), search_query.c_str(), 10, &results, &count);
+        if (rc != 0) {
+            fprintf(stderr, "search failed: %s\n", pc_memory_last_error());
+            return 1;
+        }
+        printf("%zu match(es) for \"%s\":\n", count, search_query.c_str());
+        for (size_t i = 0; i < count; i++) {
+            printf("[%s] %s\n", results[i].timestamp, results[i].content);
+            if (results[i].annotation[0] != '\0') printf("  note: %s\n", results[i].annotation);
+        }
+        pc_memory_free_search_results(results, count);
+        return 0;
+    }
+
+    if (model_path.empty()) {
         print_usage(argv[0]);
         return 1;
     }

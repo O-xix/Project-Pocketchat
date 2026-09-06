@@ -26,6 +26,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.pocketchat.app.ui.ConfirmableMenuItem
 import com.pocketchat.app.ui.TermBackground
 import com.pocketchat.app.ui.TermDim
 import com.pocketchat.app.ui.TermForeground
@@ -35,11 +36,14 @@ import com.pocketchat.app.ui.TerminalText
 
 /**
  * profile.txt and every summary are rendered with plain, non-editable Text
- * composables — no path here writes back to those files. FR-023's one
- * exception is the per-summary annotation field below each entry: the
- * user's own note, always shown in [TermUser] to stay visually distinct from
- * the model's own summary text (never merged with it). See the doc comment
- * on MemoryViewerViewModel for the storage-level detail.
+ * composables — no path here writes back to their content. Two narrow,
+ * additive exceptions: FR-023's per-summary annotation field (the user's own
+ * note, always shown in [TermUser] to stay visually distinct from the
+ * model's text) and FR-033's per-item delete action (removal only, never
+ * edits). FR-026 adds a search box at the top, reusing the same FTS5 ranking
+ * FR-013 uses for automatic memory injection — but showing exactly what
+ * matched, with no recency fallback, since a search box silently substituting
+ * unrelated recent entries would look broken rather than helpful.
  */
 @Composable
 fun MemoryViewerScreen(onBack: () -> Unit, viewModel: MemoryViewerViewModel = viewModel()) {
@@ -52,29 +56,79 @@ fun MemoryViewerScreen(onBack: () -> Unit, viewModel: MemoryViewerViewModel = vi
             .padding(12.dp)
     ) {
         TerminalText("pocketchat> memory", TermForeground)
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(8.dp))
+        SearchBox(query = uiState.searchQuery, onQueryChange = viewModel::search)
+        Spacer(Modifier.height(8.dp))
 
+        val searchResults = uiState.searchResults
         LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            item {
-                Column {
-                    TerminalText("profile.txt", TermDim)
-                    TerminalText(uiState.profile.ifBlank { "(empty)" }, TermForeground)
+            if (searchResults != null) {
+                item { TerminalText("search results (${searchResults.size})", TermDim) }
+                if (searchResults.isEmpty()) {
+                    item { TerminalText("(no matches)", TermDim) }
                 }
-            }
+                items(searchResults) { summary ->
+                    SummaryEntryRow(
+                        summary,
+                        onSaveAnnotation = { text -> viewModel.saveAnnotation(summary.baseName, text) },
+                        onDelete = { viewModel.deleteSummary(summary.baseName) },
+                    )
+                }
+            } else {
+                item { TerminalText("profile.txt", TermDim) }
+                if (uiState.profileFacts.isEmpty()) {
+                    item { TerminalText("(empty)", TermForeground) }
+                }
+                items(uiState.profileFacts) { fact ->
+                    ProfileFactRow(fact, onDelete = { viewModel.deleteProfileFact(fact) })
+                }
 
-            item { TerminalText("summaries (${uiState.summaries.size})", TermDim) }
-
-            if (!uiState.isLoading && uiState.summaries.isEmpty()) {
-                item { TerminalText("(none yet)", TermDim) }
-            }
-
-            items(uiState.summaries) { summary ->
-                SummaryEntryRow(summary, onSaveAnnotation = { text -> viewModel.saveAnnotation(summary.baseName, text) })
+                item { TerminalText("summaries (${uiState.summaries.size})", TermDim) }
+                if (!uiState.isLoading && uiState.summaries.isEmpty()) {
+                    item { TerminalText("(none yet)", TermDim) }
+                }
+                items(uiState.summaries) { summary ->
+                    SummaryEntryRow(
+                        summary,
+                        onSaveAnnotation = { text -> viewModel.saveAnnotation(summary.baseName, text) },
+                        onDelete = { viewModel.deleteSummary(summary.baseName) },
+                    )
+                }
             }
         }
 
         Spacer(Modifier.height(8.dp))
         TerminalMenuItem("[back]", onClick = onBack)
+    }
+}
+
+@Composable
+private fun SearchBox(query: String, onQueryChange: (String) -> Unit) {
+    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        TerminalText("search> ", TermDim)
+        BasicTextField(
+            value = query,
+            onValueChange = onQueryChange,
+            modifier = Modifier.weight(1f),
+            textStyle = TextStyle(
+                color = TermUser,
+                fontFamily = FontFamily.Monospace,
+                fontSize = MaterialTheme.typography.bodyLarge.fontSize,
+            ),
+            cursorBrush = SolidColor(TermUser),
+        )
+    }
+}
+
+@Composable
+private fun ProfileFactRow(fact: String, onDelete: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        TerminalText(fact, TermForeground, modifier = Modifier.weight(1f))
+        ConfirmableMenuItem("[delete]", "[confirm delete]", onConfirmed = onDelete)
     }
 }
 
@@ -87,11 +141,18 @@ fun MemoryViewerScreen(onBack: () -> Unit, viewModel: MemoryViewerViewModel = vi
  * with an action that would do nothing.
  */
 @Composable
-private fun SummaryEntryRow(entry: MemorySummaryEntry, onSaveAnnotation: (String) -> Unit) {
+private fun SummaryEntryRow(entry: MemorySummaryEntry, onSaveAnnotation: (String) -> Unit, onDelete: () -> Unit) {
     var draft by remember(entry.baseName) { mutableStateOf(entry.annotation) }
 
     Column {
-        TerminalText(entry.timestampLabel, TermDim)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            TerminalText(entry.timestampLabel, TermDim, modifier = Modifier.weight(1f))
+            ConfirmableMenuItem("[delete]", "[confirm delete]", onConfirmed = onDelete)
+        }
         TerminalText(entry.content, TermForeground)
         Row(
             modifier = Modifier.fillMaxWidth().padding(top = 4.dp),

@@ -4,6 +4,9 @@ import java.io.File
 
 enum class MemoryPhase { EXTRACTING_FACTS, SUMMARIZING }
 
+/** [timestamp] is the summary's base filename — pass it to [PocketChatMemory.deleteSummary]. */
+data class MemorySearchResult(val timestamp: String, val content: String, val annotation: String)
+
 object PocketChatMemory {
 
     /**
@@ -55,5 +58,29 @@ object PocketChatMemory {
         if (rc != 0) {
             throw PocketChatException(PocketChatEngine.nativeMemoryLastError())
         }
+    }
+
+    /**
+     * FR-026: direct user-facing search across [memoryDir]'s summaries, ranked
+     * by the same FTS5/BM25 relevance [buildContext] uses — but unlike that
+     * function, this never falls back to recency; no match means an empty
+     * list, not unrelated recent entries. Blank [query] short-circuits to an
+     * empty list without touching the native layer. Blocking — call from a
+     * background thread.
+     */
+    fun search(memoryDir: File, query: String, maxResults: Int = 10): List<MemorySearchResult> {
+        if (query.isBlank()) return emptyList()
+        val flat = PocketChatEngine.nativeMemorySearch(memoryDir.absolutePath, query, maxResults)
+        return (flat.indices step 3).map { i -> MemorySearchResult(flat[i], flat[i + 1], flat[i + 2]) }
+    }
+
+    /** FR-033: permanently deletes summary [timestamp] and its annotation, if any. Blocking. */
+    fun deleteSummary(memoryDir: File, timestamp: String) {
+        PocketChatEngine.nativeMemoryDeleteSummary(memoryDir.absolutePath, timestamp)
+    }
+
+    /** FR-033: permanently deletes the first profile.txt line exactly matching [factText]. Blocking. */
+    fun deleteProfileFact(memoryDir: File, factText: String) {
+        PocketChatEngine.nativeMemoryDeleteProfileFact(memoryDir.absolutePath, factText)
     }
 }

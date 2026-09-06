@@ -248,18 +248,32 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /**
      * Runs a memory update (PLAN.md Phase 3: "every N turns") once enough new
-     * messages have accumulated since the last one, on its own scratch native
-     * context (see core/memory/) so it doesn't touch the main chat context.
-     * Streams live progress into [ChatUiState.memoryUpdateProgress] so the UI
-     * can show something more useful than an opaque "updating memory" spinner.
-     * Never throws — failures are swallowed (a stale memory isn't worth
-     * surfacing an error over) and the next update will just cover a longer
-     * span; progress is always cleared before returning either way.
+     * messages have accumulated since the last one. See [forceMemoryUpdate]
+     * for what the update itself does.
      */
     private fun maybeUpdateMemory() {
-        val currentModel = model ?: return
         val messages = _uiState.value.messages
         if (messages.size - lastMemoryUpdateIndex < MEMORY_UPDATE_EVERY_N_MESSAGES) return
+        forceMemoryUpdate()
+    }
+
+    /**
+     * The actual memory-update pipeline, unconditionally — used by
+     * [maybeUpdateMemory]'s periodic in-session check and by FR-029's
+     * [clearChat], which must always fold in whatever's left before wiping
+     * the transcript rather than waiting for the next multiple of N. Runs on
+     * its own scratch native context (see core/memory/) so it doesn't touch
+     * the main chat context. Streams live progress into
+     * [ChatUiState.memoryUpdateProgress] so the UI can show something more
+     * useful than an opaque "updating memory" spinner. Never throws —
+     * failures are swallowed (a stale memory isn't worth surfacing an error
+     * over) and the next update will just cover a longer span; progress is
+     * always cleared before returning either way.
+     */
+    private fun forceMemoryUpdate() {
+        val currentModel = model ?: return
+        val messages = _uiState.value.messages
+        if (messages.size <= lastMemoryUpdateIndex) return // nothing new since the last update
 
         val unsummarized = messages.subList(lastMemoryUpdateIndex, messages.size).toList()
         lastMemoryUpdateIndex = messages.size
@@ -302,6 +316,33 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** FR-022: acknowledge and clear the pending summary review prompt. */
     fun dismissSummaryReview() {
         _uiState.update { it.copy(pendingSummaryReview = null) }
+    }
+
+    /**
+     * FR-029: resets the visible scrollback to start a new topic. Folds
+     * whatever hasn't been summarized yet into memory first (the same
+     * pipeline — and FR-022 review prompt — as the periodic in-session
+     * update), so nothing is lost from memory just because the screen was
+     * reset; this fires regardless of [MEMORY_UPDATE_EVERY_N_MESSAGES], since
+     * ending the session deliberately shouldn't wait for the next multiple
+     * of N. Ignored mid-generation, same guard as [reloadModelIfChanged].
+     * No confirmation step: the pre-clear summary already means nothing
+     * discussed is actually lost, just no longer on-screen — a stronger
+     * NFR-018-style confirmation dialog is that ticket's job, not this one's.
+     */
+    fun clearChat() {
+        if (_uiState.value.isGenerating) return
+        context ?: return
+        _uiState.update { it.copy(isGenerating = true) }
+        viewModelScope.launch(Dispatchers.IO) {
+            forceMemoryUpdate()
+            context?.reset()
+            lastMemoryUpdateIndex = 0
+            _uiState.update {
+                it.copy(messages = emptyList(), streamingResponse = "", error = null, isGenerating = false)
+            }
+            persistTranscript()
+        }
     }
 
     override fun onCleared() {
