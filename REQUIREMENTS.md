@@ -43,7 +43,7 @@ Living spec. Every requirement gets a stable, unique code (`FR-NNN` / `NFR-NNN`)
 | FR-031 | Custom system prompt / persona override | Idea | 2 | PRO-15 |
 | FR-032 | Dedicated Settings screen | Idea | 2 | PRO-27 |
 | FR-033 | Selective memory deletion (individual summary/fact) | Idea | 3 | PRO-28 |
-| FR-034 | Model switch replays transcript as real context, not just display | Idea | 2 | PRO-29 |
+| FR-034 | Model switch replays transcript as real context, not just display | Done | 2 | PRO-29 |
 | FR-035 | Specific explanation shown when a prompt is safety-blocked | Idea | new | PRO-30 |
 | FR-036 | First-launch onboarding/setup screen | Idea (deferred) | 2 | PRO-16 |
 | FR-037 | Free-storage check before model download | Idea | 2 | PRO-31 |
@@ -201,6 +201,7 @@ Delete one specific summary or profile fact directly, without exporting/wiping e
 ### FR-034 — Model switch replays transcript as real context, not just display
 When switching the active model (FR-003), the existing visible messages must be replayed into the newly loaded model's actual context (subject to its context window), not just left visually present in the Kotlin UI state while the new native context starts with no knowledge of them.
 **Why:** `ChatViewModel`'s `uiState.messages` persisting across a model switch doesn't by itself guarantee the *model* remembers the conversation — `reloadModelIfChanged()` creates a fresh `pc_context` for the new model, and whether that gets the prior messages replayed into it needs verification against the current implementation, not assumed. Called out explicitly because "looks continuous" and "actually is continuous" are different things, and the gap between them would be a confusing, hard-to-notice bug (the user sees old messages on screen and reasonably expects the model to know about them).
+**Shipped:** the actual bug was worse than hypothesized — `reloadModelIfChanged()` replaced the whole `ChatUiState` with a fresh default (`messages = emptyList()`), wiping the visible transcript outright on every switch, not just leaving it disconnected from the model. Fixed by `.copy()`-ing only the transient fields instead. No separate "replay" step was needed: `sendMessage()` already sends the full history every call, and a fresh context starts with `prev_len == 0`, so the next message after a switch naturally replays the whole preserved conversation via the existing incremental-context logic. Verified via CI (compiles, produces an APK); on-device confirmation of the actual runtime behavior is still open, since this environment has no device/emulator to run it on.
 
 ### FR-035 — Specific explanation shown when a prompt is safety-blocked
 When FR-015's tier-1 filter blocks a prompt, tell the user their prompt was blocked and roughly why (e.g. "matched a restricted content pattern"), rather than a generic refusal or silent failure.
