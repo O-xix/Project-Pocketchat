@@ -20,6 +20,11 @@ struct pc_context {
     // Running chat-template state (see pc_generate_chat below).
     std::vector<char> tmpl_buf;
     int                prev_len = 0;
+
+    // How many of the oldest non-system messages pc_generate_chat currently
+    // drops to make the conversation fit n_ctx. Persisted across calls so a
+    // long-running session doesn't redo the same drop-and-retry every turn.
+    size_t drop_hint = 0;
 };
 
 namespace {
@@ -84,6 +89,11 @@ int run_generation(
         const uint32_t n_ctx      = llama_n_ctx(ctx);
         const int      n_ctx_used = llama_memory_seq_pos_max(mem, 0) + 1;
         if (n_ctx_used + batch.n_tokens > (int) n_ctx) {
+            if (n_generated > 0) {
+                // The response itself grew into the limit -- stop and return what's
+                // been generated so far rather than failing an otherwise-successful reply.
+                break;
+            }
             set_error("context size exceeded");
             rc = -2;
             break;
@@ -210,6 +220,16 @@ pc_context * pc_context_create(pc_model * model, uint32_t n_ctx, int32_t n_threa
     params.n_ctx   = n_ctx > 0 ? n_ctx : 2048;
     params.n_batch = params.n_ctx;
 
+    // Asymmetric KV cache quantization: q8_0 keys preserve positional/attention
+    // fidelity, q4_0 values save the most memory since they're less sensitive to
+    // precision loss. Cuts KV cache memory by >60% vs the F16 default, which is
+    // what was pushing long conversations into OS-level OOM territory on
+    // floor-spec devices. flash_attn_type stays at its AUTO default, which
+    // llama.cpp resolves to enabled automatically since a quantized V cache
+    // requires it.
+    params.type_k = GGML_TYPE_Q8_0;
+    params.type_v = GGML_TYPE_Q4_0;
+
     const int32_t nt = n_threads > 0
         ? n_threads
         : (int32_t) std::max(1u, std::thread::hardware_concurrency());
@@ -237,7 +257,8 @@ void pc_context_free(pc_context * ctx) {
 void pc_context_reset(pc_context * ctx) {
     if (!ctx || !ctx->ctx) return;
     llama_memory_clear(llama_get_memory(ctx->ctx), true);
-    ctx->prev_len = 0;
+    ctx->prev_len  = 0;
+    ctx->drop_hint = 0;
 }
 
 uint32_t pc_context_n_ctx(const pc_context * ctx) {
@@ -270,60 +291,103 @@ int pc_generate_chat(
 
     const char * tmpl = llama_model_chat_template(pc_ctx->model, /* name */ nullptr);
 
-    std::vector<llama_chat_message> chat_msgs;
-    chat_msgs.reserve(n_messages);
-    for (size_t i = 0; i < n_messages; i++) {
-        chat_msgs.push_back({ messages[i].role, messages[i].content });
+    // Leading system message(s), if any, are never dropped by the retry loop
+    // below -- only the conversation after them gets trimmed.
+    size_t keep_start = 0;
+    while (keep_start < n_messages && std::string(messages[keep_start].role) == "system") {
+        keep_start++;
     }
+    const size_t max_drop = n_messages - keep_start;
 
     if (pc_ctx->tmpl_buf.empty()) {
         pc_ctx->tmpl_buf.resize(1024);
     }
 
-    int new_len = llama_chat_apply_template(tmpl, chat_msgs.data(), chat_msgs.size(), true,
-                                             pc_ctx->tmpl_buf.data(), (int32_t) pc_ctx->tmpl_buf.size());
-    if (new_len > (int) pc_ctx->tmpl_buf.size()) {
-        pc_ctx->tmpl_buf.resize(new_len);
-        new_len = llama_chat_apply_template(tmpl, chat_msgs.data(), chat_msgs.size(), true,
-                                             pc_ctx->tmpl_buf.data(), (int32_t) pc_ctx->tmpl_buf.size());
+    // Starts from the context's own hint of how much it's already had to drop
+    // to fit -- avoids redoing the same drop-and-retry every call in a long
+    // session, since history only grows and the same overflow would recur.
+    size_t drop_count = std::min(pc_ctx->drop_hint, max_drop);
+
+    for (;;) {
+        std::vector<llama_chat_message> chat_msgs;
+        chat_msgs.reserve(n_messages - drop_count);
+        for (size_t i = 0; i < keep_start; i++) {
+            chat_msgs.push_back({ messages[i].role, messages[i].content });
+        }
+        for (size_t i = keep_start + drop_count; i < n_messages; i++) {
+            chat_msgs.push_back({ messages[i].role, messages[i].content });
+        }
+        if (chat_msgs.empty()) {
+            set_error("pc_generate_chat: context too small to fit even the latest message");
+            return -2;
+        }
+
+        int new_len = llama_chat_apply_template(tmpl, chat_msgs.data(), chat_msgs.size(), true,
+                                                 pc_ctx->tmpl_buf.data(), (int32_t) pc_ctx->tmpl_buf.size());
+        if (new_len > (int) pc_ctx->tmpl_buf.size()) {
+            pc_ctx->tmpl_buf.resize(new_len);
+            new_len = llama_chat_apply_template(tmpl, chat_msgs.data(), chat_msgs.size(), true,
+                                                 pc_ctx->tmpl_buf.data(), (int32_t) pc_ctx->tmpl_buf.size());
+        }
+        if (new_len < 0) {
+            set_error("failed to apply chat template");
+            return -1;
+        }
+
+        // drop_hint only changes on success (below), so drop_count exceeding it
+        // means this iteration just trimmed further than the KV cache reflects --
+        // start that (shorter) prompt from scratch instead of reusing prev_len,
+        // which described a longer, now-stale history.
+        const bool  needs_reset = drop_count > pc_ctx->drop_hint;
+        const int   start_len   = needs_reset ? 0 : pc_ctx->prev_len;
+        if (new_len < start_len) {
+            set_error("pc_generate_chat: messages is shorter than the context's running conversation "
+                       "(call pc_context_reset() before starting a new/different conversation)");
+            return -5;
+        }
+        if (needs_reset) {
+            pc_context_reset(pc_ctx);
+        }
+
+        const std::string prompt(pc_ctx->tmpl_buf.begin() + start_len, pc_ctx->tmpl_buf.begin() + new_len);
+
+        chat_gen_state state;
+        state.user_cb   = callback;
+        state.user_data = user_data;
+
+        const int rc = run_generation(pc_ctx, prompt, /*parse_special=*/true, sampling, chat_gen_trampoline, &state);
+
+        if (rc == -2 && drop_count < max_drop) {
+            // The prompt itself doesn't fit -- drop the oldest remaining
+            // non-system message and rebuild the prompt from scratch.
+            drop_count++;
+            continue;
+        }
+        if (rc != 0) {
+            return rc;
+        }
+
+        pc_ctx->drop_hint = drop_count;
+
+        // Recompute how much of the templated conversation is now "consumed" — this
+        // must include the reply we just generated (its tokens are already sitting
+        // in the KV cache), so the next call only feeds genuinely new text through
+        // decode. The caller is expected to append this exact response text as an
+        // {"assistant", ...} message before its next pc_generate_chat() call.
+        chat_msgs.push_back({ "assistant", state.response.c_str() });
+        int consumed_len = llama_chat_apply_template(tmpl, chat_msgs.data(), chat_msgs.size(), false,
+                                                      pc_ctx->tmpl_buf.data(), (int32_t) pc_ctx->tmpl_buf.size());
+        if (consumed_len > (int) pc_ctx->tmpl_buf.size()) {
+            pc_ctx->tmpl_buf.resize(consumed_len);
+            consumed_len = llama_chat_apply_template(tmpl, chat_msgs.data(), chat_msgs.size(), false,
+                                                      pc_ctx->tmpl_buf.data(), (int32_t) pc_ctx->tmpl_buf.size());
+        }
+        if (consumed_len >= 0) {
+            pc_ctx->prev_len = consumed_len;
+        }
+
+        return 0;
     }
-    if (new_len < 0) {
-        set_error("failed to apply chat template");
-        return -1;
-    }
-
-    if (new_len < pc_ctx->prev_len) {
-        set_error("pc_generate_chat: messages is shorter than the context's running conversation "
-                   "(call pc_context_reset() before starting a new/different conversation)");
-        return -5;
-    }
-
-    const std::string prompt(pc_ctx->tmpl_buf.begin() + pc_ctx->prev_len, pc_ctx->tmpl_buf.begin() + new_len);
-
-    chat_gen_state state;
-    state.user_cb   = callback;
-    state.user_data = user_data;
-
-    const int rc = run_generation(pc_ctx, prompt, /*parse_special=*/true, sampling, chat_gen_trampoline, &state);
-
-    // Recompute how much of the templated conversation is now "consumed" — this
-    // must include the reply we just generated (its tokens are already sitting
-    // in the KV cache), so the next call only feeds genuinely new text through
-    // decode. The caller is expected to append this exact response text as an
-    // {"assistant", ...} message before its next pc_generate_chat() call.
-    chat_msgs.push_back({ "assistant", state.response.c_str() });
-    int consumed_len = llama_chat_apply_template(tmpl, chat_msgs.data(), chat_msgs.size(), false,
-                                                  pc_ctx->tmpl_buf.data(), (int32_t) pc_ctx->tmpl_buf.size());
-    if (consumed_len > (int) pc_ctx->tmpl_buf.size()) {
-        pc_ctx->tmpl_buf.resize(consumed_len);
-        consumed_len = llama_chat_apply_template(tmpl, chat_msgs.data(), chat_msgs.size(), false,
-                                                  pc_ctx->tmpl_buf.data(), (int32_t) pc_ctx->tmpl_buf.size());
-    }
-    if (consumed_len >= 0) {
-        pc_ctx->prev_len = consumed_len;
-    }
-
-    return rc;
 }
 
 int pc_generate_raw(

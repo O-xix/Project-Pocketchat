@@ -63,7 +63,16 @@ uint32_t pc_context_n_used(const pc_context * ctx);
 // conversation — pass the whole list each call) and streams a generated
 // reply via `callback`. Only the newly-templated suffix since the last call
 // is actually fed through decode, so this is cheap for multi-turn use.
-// Returns 0 on success, negative on error (see pc_last_error()).
+//
+// If the conversation no longer fits the context window, the oldest
+// non-system messages are silently dropped (oldest first) and the prompt is
+// rebuilt until it fits, rather than failing — callers should keep passing
+// the full, untrimmed history each call. If the response itself grows into
+// the limit mid-generation, generation stops and what was produced so far is
+// returned as a normal success rather than an error.
+//
+// Returns 0 on success, negative on error (see pc_last_error()) — an error is
+// only returned if even the single latest message can't fit at all.
 int pc_generate_chat(
     pc_context             * ctx,
     const pc_chat_message  * messages,
