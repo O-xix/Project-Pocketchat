@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FR-021: DebugLog.share() needs a FileProvider URI (not a raw file://
+     one) to hand debug.log to another app's share target — debug.log lives
+     directly in context.filesDir, matched by files-path path="." below. -->
+<paths>
+    <files-path name="debug_log" path="." />
+</paths>

@@ -20,11 +20,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.pocketchat.app.DebugLog
 import com.pocketchat.app.inference.MemoryVoice
 import com.pocketchat.app.ui.ConfirmableMenuItem
 import com.pocketchat.app.ui.TermBackground
@@ -40,7 +42,7 @@ import com.pocketchat.app.ui.TerminalText
  * voice), and FR-031 (persona/system-prompt override) all live here.
  */
 @Composable
-fun SettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel = viewModel()) {
+fun SettingsScreen(onBack: () -> Unit, onOpenAbout: () -> Unit = {}, viewModel: SettingsViewModel = viewModel()) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
     Column(
@@ -56,10 +58,45 @@ fun SettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel = viewModel(
             item { MemoryToggleSection(uiState.memoryEnabled, onSetEnabled = viewModel::setMemoryEnabled) }
             item { MemoryVoiceSection(uiState.memoryVoice, onSetVoice = viewModel::setMemoryVoice) }
             item { PersonaSection(uiState.personaOverride, onSave = viewModel::setPersonaOverride) }
+            item { SlashCommandsSection(uiState.slashCommandsEnabled, onSetEnabled = viewModel::setSlashCommandsEnabled) }
+            item { DebugLogSection() }
+            item { TerminalMenuItem("[about]", onClick = onOpenAbout) }
         }
 
         Spacer(Modifier.height(8.dp))
         TerminalMenuItem("[back]", onClick = onBack)
+    }
+}
+
+/** FR-041: opt-in — off leaves chat input as plain text, unchanged from before this ticket. */
+@Composable
+private fun SlashCommandsSection(enabled: Boolean, onSetEnabled: (Boolean) -> Unit) {
+    Column {
+        TerminalText("slash commands", TermDim)
+        TerminalText(
+            if (enabled) "on — try /help in chat" else "off — chat input is always sent as a plain message",
+            TermForeground,
+        )
+        TerminalMenuItem(if (enabled) "[turn off]" else "[turn on]", onClick = { onSetEnabled(!enabled) })
+    }
+}
+
+/**
+ * FR-021: only shown as actionable once there's actually something to send —
+ * before any crash/error, [DebugLog.hasContent] is false and this is just a
+ * status line, not a dead button.
+ */
+@Composable
+private fun DebugLogSection() {
+    val context = LocalContext.current
+    Column {
+        TerminalText("debug log", TermDim)
+        if (DebugLog.hasContent(context)) {
+            TerminalText("local error/crash log available to share", TermForeground)
+            TerminalMenuItem("[export debug log]", onClick = { DebugLog.share(context) })
+        } else {
+            TerminalText("nothing logged yet", TermForeground)
+        }
     }
 }
 
@@ -70,7 +107,7 @@ fun SettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel = viewModel(
  * FR-029/FR-033. Turning it back on is not destructive — plain one-tap.
  */
 @Composable
-private fun MemoryToggleSection(enabled: Boolean, onSetEnabled: (Boolean) -> Unit) {
+fun MemoryToggleSection(enabled: Boolean, onSetEnabled: (Boolean) -> Unit) {
     Column {
         TerminalText("memory", TermDim)
         TerminalText(if (enabled) "on — extracting facts and summarizing sessions" else "off — nothing new is being remembered", TermForeground)
@@ -84,7 +121,7 @@ private fun MemoryToggleSection(enabled: Boolean, onSetEnabled: (Boolean) -> Uni
 
 /** FR-014: a basic two-option picker, per the ticket's explicit "keep it simple to start" scope. */
 @Composable
-private fun MemoryVoiceSection(voice: MemoryVoice, onSetVoice: (MemoryVoice) -> Unit) {
+fun MemoryVoiceSection(voice: MemoryVoice, onSetVoice: (MemoryVoice) -> Unit) {
     Column {
         TerminalText("memory voice", TermDim)
         TerminalText(

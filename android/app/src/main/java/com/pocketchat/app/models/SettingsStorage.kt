@@ -15,6 +15,8 @@ object SettingsStorage {
     private const val KEY_MEMORY_ENABLED = "memory_enabled"
     private const val KEY_MEMORY_VOICE = "memory_voice"
     private const val KEY_PERSONA_OVERRIDE = "persona_override"
+    private const val KEY_ONBOARDING_COMPLETED = "onboarding_completed"
+    private const val KEY_SLASH_COMMANDS_ENABLED = "slash_commands_enabled"
 
     /** FR-020: default on — memory is the existing behavior, opting out is the explicit choice. */
     fun isMemoryEnabled(context: Context): Boolean = prefs(context).getBoolean(KEY_MEMORY_ENABLED, true)
@@ -37,6 +39,20 @@ object SettingsStorage {
 
     fun setPersonaOverride(context: Context, text: String?) {
         prefs(context).edit().putString(KEY_PERSONA_OVERRIDE, text?.trim()?.takeIf { it.isNotEmpty() }).apply()
+    }
+
+    /** FR-036: default false — a fresh install routes through onboarding exactly once. */
+    fun isOnboardingCompleted(context: Context): Boolean = prefs(context).getBoolean(KEY_ONBOARDING_COMPLETED, false)
+
+    fun setOnboardingCompleted(context: Context, completed: Boolean) {
+        prefs(context).edit().putBoolean(KEY_ONBOARDING_COMPLETED, completed).apply()
+    }
+
+    /** FR-041: opt-in — off by default so existing plain-text chat behavior doesn't change underfoot. */
+    fun isSlashCommandsEnabled(context: Context): Boolean = prefs(context).getBoolean(KEY_SLASH_COMMANDS_ENABLED, false)
+
+    fun setSlashCommandsEnabled(context: Context, enabled: Boolean) {
+        prefs(context).edit().putBoolean(KEY_SLASH_COMMANDS_ENABLED, enabled).apply()
     }
 
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)

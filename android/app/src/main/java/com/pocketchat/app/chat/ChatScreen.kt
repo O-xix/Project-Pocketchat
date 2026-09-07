@@ -42,6 +42,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.pocketchat.app.inference.ChatMessage
 import com.pocketchat.app.inference.MemoryPhase
+import com.pocketchat.app.models.SettingsStorage
 import com.pocketchat.app.power.ThrottleReason
 import com.pocketchat.app.ui.ConfirmableMenuItem
 import com.pocketchat.app.ui.TermBackground
@@ -56,16 +57,40 @@ import com.pocketchat.app.ui.TerminalTextField
 @Composable
 fun ChatScreen(
     onOpenModelManager: () -> Unit,
-    onOpenMemoryViewer: () -> Unit,
+    onOpenMemoryViewer: (String?) -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenAbout: () -> Unit = {},
     viewModel: ChatViewModel = viewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
     // FR-040: local, ephemeral UI state — null means not searching. Distinct
     // from FR-026's archived-memory search: this filters the live, not-yet-
     // summarized scrollback, so it has no reason to touch ChatViewModel or
     // survive process death.
     var searchQuery by remember { mutableStateOf<String?>(null) }
+    // FR-041: a one-off banner for /help — not part of ChatUiState since it's
+    // purely local, ephemeral UI text, same reasoning as searchQuery above.
+    var helpBanner by remember { mutableStateOf<String?>(null) }
+
+    // FR-041: slash commands are opt-in and only checked when the user
+    // actually submits something starting with "/" — see handleSubmit below.
+    fun handleSubmit(text: String) {
+        if (SettingsStorage.isSlashCommandsEnabled(context)) {
+            when (val command = parseSlashCommand(text)) {
+                SlashCommand.Clear -> { viewModel.clearChat(); return }
+                SlashCommand.Settings -> { onOpenSettings(); return }
+                SlashCommand.Models -> { onOpenModelManager(); return }
+                SlashCommand.About -> { onOpenAbout(); return }
+                SlashCommand.Memory -> { onOpenMemoryViewer(null); return }
+                is SlashCommand.MemorySearch -> { onOpenMemoryViewer(command.query); return }
+                is SlashCommand.Search -> { searchQuery = command.query; return }
+                SlashCommand.Help -> { helpBanner = helpText(); return }
+                null -> Unit
+            }
+        }
+        viewModel.sendMessage(text)
+    }
 
     Column(
         modifier = Modifier
@@ -75,7 +100,7 @@ fun ChatScreen(
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             TerminalMenuItem("[models]", onClick = onOpenModelManager)
-            TerminalMenuItem("[memory]", onClick = onOpenMemoryViewer)
+            TerminalMenuItem("[memory]", onClick = { onOpenMemoryViewer(null) })
             TerminalMenuItem("[settings]", onClick = onOpenSettings)
             // FR-029: folds whatever's unsummarized into memory before wiping
             // the transcript — see ChatViewModel.clearChat()'s doc comment.
@@ -93,6 +118,9 @@ fun ChatScreen(
         uiState.pendingSummaryReview?.let { summary ->
             SummaryReviewBanner(summary = summary, onDismiss = viewModel::dismissSummaryReview)
         }
+        helpBanner?.let { text ->
+            HelpBanner(text = text, onDismiss = { helpBanner = null })
+        }
         // FR-028: only while an actual chat reply is streaming, not during a
         // memory update or clear — those don't check ChatViewModel.stopRequested,
         // so [stop] would otherwise appear and silently do nothing during them.
@@ -103,7 +131,7 @@ fun ChatScreen(
         }
         InputPrompt(
             enabled = uiState.modelStatus is ModelStatus.Ready && !uiState.isGenerating,
-            onSubmit = viewModel::sendMessage,
+            onSubmit = ::handleSubmit,
             restoreText = uiState.restoredInput,
             onRestoreConsumed = viewModel::consumeRestoredInput,
         )
@@ -125,6 +153,19 @@ private fun SummaryReviewBanner(summary: String, onDismiss: () -> Unit) {
     ) {
         TerminalText("pocketchat> session summary — review:", TermDim)
         TerminalText(summary, TermForeground)
+        TerminalMenuItem("[ok]", onClick = onDismiss)
+    }
+}
+
+/** FR-041: shown for /help — dismissed the same way as [SummaryReviewBanner]. */
+@Composable
+private fun HelpBanner(text: String, onDismiss: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+    ) {
+        TerminalText("pocketchat> $text", TermDim)
         TerminalMenuItem("[ok]", onClick = onDismiss)
     }
 }

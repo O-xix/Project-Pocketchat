@@ -13,6 +13,7 @@ data class SettingsUiState(
     val memoryEnabled: Boolean = true,
     val memoryVoice: MemoryVoice = MemoryVoice.NEUTRAL,
     val personaOverride: String = "",
+    val slashCommandsEnabled: Boolean = false,
 )
 
 /** FR-032: backs the settings screen; each setter writes through to [SettingsStorage] immediately. */
@@ -27,6 +28,7 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
             memoryEnabled = SettingsStorage.isMemoryEnabled(app),
             memoryVoice = SettingsStorage.memoryVoice(app),
             personaOverride = SettingsStorage.personaOverride(app) ?: "",
+            slashCommandsEnabled = SettingsStorage.isSlashCommandsEnabled(app),
         )
     }
 
@@ -47,5 +49,11 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         val trimmed = text.trim()
         SettingsStorage.setPersonaOverride(getApplication(), trimmed)
         _uiState.update { it.copy(personaOverride = trimmed) }
+    }
+
+    /** FR-041: opt-in slash-command input mode. */
+    fun setSlashCommandsEnabled(enabled: Boolean) {
+        SettingsStorage.setSlashCommandsEnabled(getApplication(), enabled)
+        _uiState.update { it.copy(slashCommandsEnabled = enabled) }
     }
 }

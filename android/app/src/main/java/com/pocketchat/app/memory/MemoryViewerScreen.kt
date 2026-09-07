@@ -14,6 +14,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -46,8 +47,19 @@ import com.pocketchat.app.ui.TerminalText
  * unrelated recent entries would look broken rather than helpful.
  */
 @Composable
-fun MemoryViewerScreen(onBack: () -> Unit, viewModel: MemoryViewerViewModel = viewModel()) {
+fun MemoryViewerScreen(
+    onBack: () -> Unit,
+    initialSearchQuery: String? = null,
+    viewModel: MemoryViewerViewModel = viewModel(),
+) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+
+    // FR-041: lets `/memory search <query>` land directly on results instead
+    // of the profile/summaries default view — only fires once per navigation,
+    // not on every recomposition.
+    LaunchedEffect(initialSearchQuery) {
+        if (!initialSearchQuery.isNullOrBlank()) viewModel.search(initialSearchQuery)
+    }
 
     Column(
         modifier = Modifier

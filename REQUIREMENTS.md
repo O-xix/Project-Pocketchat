@@ -30,7 +30,7 @@ Living spec. Every requirement gets a stable, unique code (`FR-NNN` / `NFR-NNN`)
 | FR-018 | Semantic/vector memory search | Deferred | 3 | PRO-11 |
 | FR-019 | Memory export/backup (single zip via share sheet) | Idea | 3 | PRO-19 |
 | FR-020 | Memory on/off toggle (privacy opt-out) | Done | 3 | PRO-20 |
-| FR-021 | Manual debug/crash log export | Idea | — | PRO-21 |
+| FR-021 | Manual debug/crash log export | Done | — | PRO-21 |
 | FR-022 | Post-session summary review prompt (in-app) | Done | 3 | PRO-22 |
 | FR-023 | User-authored annotations on summaries | Done | 3 | PRO-23 |
 | FR-024 | Configurable summary scope (opt-in/threshold, not every session) | Idea | 3 | PRO-12 |
@@ -45,12 +45,12 @@ Living spec. Every requirement gets a stable, unique code (`FR-NNN` / `NFR-NNN`)
 | FR-033 | Selective memory deletion (individual summary/fact) | Done | 3 | PRO-28 |
 | FR-034 | Model switch replays transcript as real context, not just display | Done | 2 | PRO-29 |
 | FR-035 | Specific explanation shown when a prompt is safety-blocked | Done | new | PRO-30 |
-| FR-036 | First-launch onboarding/setup screen | Idea (deferred) | 2 | PRO-16 |
+| FR-036 | First-launch onboarding/setup screen | Done | 2 | PRO-16 |
 | FR-037 | Free-storage check before model download | Done | 2 | PRO-31 |
 | FR-038 | Per-message copy/share actions | Done | 2 | PRO-32 |
-| FR-039 | About/legal screen (license, version, source link) | Idea | 2 | PRO-33 |
+| FR-039 | About/legal screen (license, version, source link) | Done | 2 | PRO-33 |
 | FR-040 | Search within the live (not-yet-summarized) chat scrollback | Done | 2 | PRO-34 |
-| FR-041 | Slash-command input mode (opt-in) | Idea | 2 | PRO-35 |
+| FR-041 | Slash-command input mode (opt-in) | Done | 2 | PRO-35 |
 | FR-042 | Background-resilient generation with completion notification | Done | 2 | PRO-36 |
 | FR-043 | On-device response-time stats (TTFT + tokens/sec) | Done | 2, 6 | PRO-37 |
 
@@ -148,6 +148,8 @@ A setting to disable the memory system entirely: no fact extraction, no summarie
 ### FR-021 — Manual debug/crash log export
 A user-initiated (never automatic) way to export a local debug/crash log, e.g. via share sheet, for attaching to a bug report.
 **Why:** clarifies the boundary of NFR-001 (zero telemetry) — nothing leaves the device without the user directly initiating it, so this doesn't violate the zero-telemetry principle while still giving bug reports something better than free-text repro steps.
+**Shipped:** a new `DebugLog` object appends timestamped lines to a plain `debug.log` in `context.filesDir`, capped at 512KB (oldest content trimmed first — recent context matters more for a bug report than full history). `PocketChatApplication` (a new `Application` subclass, registered in the manifest) chains a `Thread.setDefaultUncaughtExceptionHandler` at process start so a crash is logged even before any activity exists, then re-raises into the platform's own default handler so the crash still surfaces normally. Two existing `ChatViewModel` catch blocks (`loadModel()`, `sendMessage()`'s generation try/catch) now also log their exception's stack trace — a deliberately modest set of call sites rather than threading logging through every error path in the app. Export is a new "[export debug log]" action in `SettingsScreen.kt` (only shown once `DebugLog.hasContent()` is true), sharing the file via a `FileProvider` (`androidx.core.content.FileProvider`, new `res/xml/file_paths.xml` config, new `<provider>` manifest entry) rather than a raw `file://` URI, which API 24+ blocks for another app's share target.
+**Limitations:** only two call sites are wired to log proactively (plus any uncaught crash) — most caught exceptions elsewhere in the app still fail silently as before. `log()` never throws by design, so a filesystem failure while logging is itself swallowed rather than surfaced.
 
 ### FR-022 — Post-session summary review prompt
 Immediately after a session's summary finishes generating (`PC_MEMORY_PHASE_SUMMARIZING` completes), show the user an in-app prompt to review it, while the conversation is still fresh in their mind.
@@ -226,7 +228,8 @@ When FR-015's tier-1 filter blocks a prompt, tell the user their prompt was bloc
 ### FR-036 — First-launch onboarding/setup screen
 A one-time first-launch screen surfacing the memory on/off (FR-020) and memory voice (FR-014) choices explicitly, instead of the user discovering them later in Settings (FR-032).
 **Why:** deliberately not built now — first launch drops straight into chat with sensible defaults (memory on, neutral voice) to keep the minimal terminal-app feel and avoid a setup wizard fighting that aesthetic. Ticketed now because the need is real: as more first-run-relevant settings accumulate, an informed-choice-upfront screen becomes more valuable, but there's no urgency to build it before those settings themselves exist.
-**Status:** `Idea (deferred)`, ticketed ahead of implementation per explicit request — see PRO-16.
+**Shipped:** the blocking condition noted above is resolved now that FR-020/FR-014/FR-032 (memory toggle, voice picker, Settings screen) all exist — `OnboardingScreen.kt` (new `com.pocketchat.app.onboarding` package) reuses the exact same `MemoryToggleSection`/`MemoryVoiceSection` composables `SettingsScreen.kt` already had (un-privatized for reuse, no logic duplicated), plus a short zero-telemetry/on-device blurb and a `[continue]` button. `SettingsStorage.isOnboardingCompleted`/`setOnboardingCompleted` (default `false`) gate a one-time check in `PocketChatApp.kt`: a fresh install routes to `Screen.Onboarding` first, `[continue]` marks it completed and never revisits it. Deliberately minimal per the original scope note — no persona/other settings included, just the two choices called out in the ticket.
+**Limitation:** the check only runs once at process start (a `remember` seeded from `SettingsStorage` at composition), not re-evaluated afterward — an edge case where `SettingsStorage` is cleared externally mid-session (there's no in-app way to do this) wouldn't retroactively show onboarding again without a process restart. Not a real-world concern given how the flag is set.
 
 ### FR-037 — Free-storage check before model download
 Before starting a model download (FR-003/FR-012), check available device storage against the catalog entry's `approxSizeBytes` (or the target file's reported size for BYOM) and warn if insufficient, rather than letting a multi-GB download fail partway through.
@@ -241,6 +244,8 @@ Let the user copy or share the text of an individual chat message (e.g. a long-p
 ### FR-039 — About/legal screen
 A minimal in-app screen showing app version, AGPLv3 license text, and a link to the public source repository.
 **Why:** standard practice for publicly distributing GPL-family-licensed binaries — makes the source-availability expectation easy to satisfy for anyone who receives the app, at very low build cost.
+**Shipped:** `AboutScreen.kt` shows the app's `versionName` (via `PackageManager.getPackageInfo`), a tappable link to the public source repo (`Intent.ACTION_VIEW`, the device's own browser — a user-initiated action, not a network call this app makes itself, same NFR-001 reasoning as FR-021's export), and the full AGPLv3 text loaded from a new bundled asset (`assets/LICENSE.txt`, a copy of the repo-root `LICENSE` file) rather than a short notice-and-link, since the ticket calls for the license text itself. Reached via a new `[about]` item at the bottom of `SettingsScreen.kt`, and also via `/about` once FR-041 is enabled.
+**Limitation:** `LICENSE.txt` is a committed copy of the root `LICENSE`, not generated at build time — if the root license text is ever revised, this asset needs a manual matching update (a build-time copy step would remove that risk, not done here since it's a small, static file).
 
 ### FR-040 — Search within the live chat scrollback
 Search the current, still-open conversation directly, before it's ever summarized (FR-008) or reaches FR-026's archived-memory search. Reachable via a `[search]`-style header menu item by default; when FR-041 is enabled, also reachable as `/search <query>` typed directly in the chat input.
@@ -252,6 +257,8 @@ An opt-in input mode (toggle in Settings, FR-032) that recognizes a small fixed 
 **Why:** fits PocketChat's terminal aesthetic (PLAN.md's UI design is explicitly terminal/recovery-mode-inspired) better than a search bar or a growing set of header menu items competing for space — commands are the native interaction pattern for that visual identity. Default **off**: target users legitimately type a literal leading `/` in normal messages often enough (technical topics, fractions like "1/4 cup," file paths) that always-on interception risks silently eating real input; it's a discoverable opt-in for users who want the accelerator, not a default behavior change.
 **Fallback rule:** only an *exact* match against the fixed known command set intercepts input — anything else starting with `/` (recognized or not) is sent to the model unchanged as a normal message. No partial-match guessing, no rejection of "invalid" commands — a mistyped or coincidental leading slash never blocks or mangles what the user meant to say.
 **Non-goal:** does not replace or hide the existing header menu items (`[models]`/`[memory]`/etc.) or FR-032's Settings screen — those remain the permanent, always-available paths regardless of this toggle's state; commands are strictly additive.
+**Shipped:** new `SlashCommands.kt` (`parseSlashCommand(text): SlashCommand?`, a sealed interface: `Clear`/`Settings`/`Models`/`About`/`Memory`/`MemorySearch(query)`/`Search(query)`/`Help`) implements exactly the fallback rule above — only a whole command token (`text.trim().substringBefore(' ')`) exactly matching a known command intercepts; anything else, including any other leading-`/` text, returns `null` and falls through as a normal message. `SettingsStorage.isSlashCommandsEnabled` (default `false`) backs a new toggle in `SettingsScreen.kt`. `ChatScreen.kt`'s `handleSubmit()` checks the toggle only when actually submitting, so the check itself has zero cost when off. `PocketChatApp.kt`'s internal `Screen` type became a `sealed interface` (from a plain `enum`) so `MemoryViewer` can carry an optional `initialSearchQuery`, letting `/memory search <query>` land directly on FR-026 results (`MemoryViewerScreen`'s new `initialSearchQuery` param, applied via a one-shot `LaunchedEffect`). `/help` shows a static command list as a dismissible banner, reusing the same visual pattern as FR-022's summary-review banner.
+**Limitation:** `/about` opened via slash command from Chat always backs out to Settings (not back to Chat) — `About`'s `onBack` is wired to a fixed destination rather than a navigation stack, since this app has none; a real back-stack is a larger change not warranted by this one edge case.
 
 ### FR-042 — Background-resilient generation with completion notification
 If the user leaves the app while a response is generating, keep generating in an Android foreground service (with the persistent "generating..." notification Android requires for background CPU work) instead of pausing or losing it, and post a completion notification when the response is ready. Scoped to normal chat responses only for now — memory update passes (FR-010/FR-022) already have their own in-app progress and review flow and aren't included here.

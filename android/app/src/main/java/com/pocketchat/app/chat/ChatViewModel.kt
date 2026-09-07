@@ -6,6 +6,7 @@ import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.viewModelScope
+import com.pocketchat.app.DebugLog
 import com.pocketchat.app.inference.ChatMessage
 import com.pocketchat.app.inference.MemoryPhase
 import com.pocketchat.app.inference.PocketChatContext
@@ -145,6 +146,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             loadedModelPath = modelFile.absolutePath
             _uiState.update { it.copy(modelStatus = ModelStatus.Ready) }
         } catch (e: Exception) {
+            DebugLog.log(app, "ChatViewModel", "loadModel failed: ${e.stackTraceToString()}")
             loadedModelPath = null
             _uiState.update { it.copy(modelStatus = ModelStatus.Failed(e.message ?: "failed to load model")) }
         }
@@ -341,6 +343,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 // the next send() re-plays the full (still-intact) `messages` history
                 // into a fresh context rather than getting permanently stuck.
                 ctx.reset()
+                DebugLog.log(getApplication(), "ChatViewModel", "sendMessage failed: ${e.stackTraceToString()}")
                 isGeneratingChatResponse = false
                 GenerationForegroundService.stop(getApplication()) // FR-042: no completion notification for a failed generation
                 _uiState.update {
