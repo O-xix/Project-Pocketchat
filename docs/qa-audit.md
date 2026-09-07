@@ -19,7 +19,7 @@ Current build under test: `ee6e96b` (CI run [34078237921](https://github.com/O-x
 
 | Round | Code(s) | Area | Status |
 |---|---|---|---|
-| 1 | FR-036, FR-006 | First launch: onboarding, bundled model (no download required) | ☐ |
+| 1 | FR-036, FR-006 | First launch: onboarding, bundled model (no download required) | ✅ |
 | 2 | FR-001, FR-002 | Basic chat generation + terminal UI | ☐ |
 | 3 | FR-015, FR-035, NFR-013 | Safety filter blocks a known marker with a specific reason | ☐ |
 | 4 | FR-028 | Stop generation mid-response; text restored into input, editable | ☐ |
@@ -82,3 +82,25 @@ Current build under test: `ee6e96b` (CI run [34078237921](https://github.com/O-x
 
 ### Report back
 For each of the two items, tell me: pass / fail, and if anything looked different from "Expect" (exact wording you saw, what didn't appear, anything that crashed or hung). Once you report, I'll mark the checklist and we'll move to Round 2 (basic chat generation + terminal UI look-and-feel).
+
+**Result:** ✅ pass — setup, FR-036, FR-006 all confirmed as expected.
+
+---
+
+## Round 2 — Basic chat generation (FR-001) + terminal UI (FR-002)
+
+### FR-001 — Local on-device LLM chat inference
+1. Send a real question that needs an actual answer, not just "hello" — e.g. "what's 12 times 7?" or "name three colors."
+2. **Expect:** tokens stream in progressively (not all text appearing at once) and the answer is coherent for whatever tiny bundled model this is (don't expect a large-model level of quality — just confirm it's actually generating a real, on-topic response, not an error or a canned string).
+3. Send a second message continuing the topic (e.g. after asking about colors, ask "which of those is your favorite?"). **Expect:** the reply shows awareness of the earlier turn — this is a basic multi-turn context check (full KV-cache behavior is covered later in Round 23/NFR-010).
+4. While a response is streaming, confirm nothing else on screen is interactable in a broken way — input should be disabled/greyed during generation (re-confirms `enabled = uiState.modelStatus is ModelStatus.Ready && !uiState.isGenerating` from `ChatScreen.kt`).
+
+### FR-002 — Terminal-styled UI
+Pure visual check — look at the chat screen and confirm:
+1. Background is black, all text is monospace.
+2. Your own messages are prefixed `you> ` and shown in a distinct color from the assistant's `pocketchat> ` lines (this is `TermUser` vs `TermForeground` — if you changed the palette in Round "31"/FR-044 already, skip that regression and just confirm the two are still visually distinct from each other, whatever the active palette is).
+3. Header row shows flat bracketed menu items — `[models] [memory] [settings] [search] [clear]` — not Android-style buttons/icons, no Material dialogs or popups anywhere on this screen.
+4. No visible truncation/overlap/clipping of text at your device's screen size (portrait).
+
+### Report back
+Pass/fail on each, with anything that looked visually off (e.g. wrong color pairing, overlapping text, a non-monospace font sneaking in somewhere). Then we'll move to Round 3 (safety filter block + explanation).
