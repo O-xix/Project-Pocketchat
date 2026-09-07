@@ -2,6 +2,8 @@ package com.pocketchat.app.models
 
 import android.content.Context
 import com.pocketchat.app.inference.MemoryVoice
+import com.pocketchat.app.ui.TerminalFontSize
+import com.pocketchat.app.ui.TerminalPalette
 
 /**
  * FR-032's underlying storage: memory on/off (FR-020), memory voice
@@ -17,6 +19,8 @@ object SettingsStorage {
     private const val KEY_PERSONA_OVERRIDE = "persona_override"
     private const val KEY_ONBOARDING_COMPLETED = "onboarding_completed"
     private const val KEY_SLASH_COMMANDS_ENABLED = "slash_commands_enabled"
+    private const val KEY_TERMINAL_PALETTE = "terminal_palette"
+    private const val KEY_FONT_SIZE = "font_size"
 
     /** FR-020: default on — memory is the existing behavior, opting out is the explicit choice. */
     fun isMemoryEnabled(context: Context): Boolean = prefs(context).getBoolean(KEY_MEMORY_ENABLED, true)
@@ -53,6 +57,26 @@ object SettingsStorage {
 
     fun setSlashCommandsEnabled(context: Context, enabled: Boolean) {
         prefs(context).edit().putBoolean(KEY_SLASH_COMMANDS_ENABLED, enabled).apply()
+    }
+
+    /** FR-044: default GREEN — preserves the original look for anyone upgrading from before this setting existed. */
+    fun terminalPalette(context: Context): TerminalPalette =
+        prefs(context).getString(KEY_TERMINAL_PALETTE, null)?.let { name ->
+            runCatching { TerminalPalette.valueOf(name) }.getOrNull()
+        } ?: TerminalPalette.GREEN
+
+    fun setTerminalPalette(context: Context, palette: TerminalPalette) {
+        prefs(context).edit().putString(KEY_TERMINAL_PALETTE, palette.name).apply()
+    }
+
+    /** FR-044: default MEDIUM — matches the fixed size every screen already used before this setting existed. */
+    fun fontSize(context: Context): TerminalFontSize =
+        prefs(context).getString(KEY_FONT_SIZE, null)?.let { name ->
+            runCatching { TerminalFontSize.valueOf(name) }.getOrNull()
+        } ?: TerminalFontSize.MEDIUM
+
+    fun setFontSize(context: Context, size: TerminalFontSize) {
+        prefs(context).edit().putString(KEY_FONT_SIZE, size.name).apply()
     }
 
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)

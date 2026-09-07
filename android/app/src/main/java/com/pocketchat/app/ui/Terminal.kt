@@ -22,11 +22,21 @@ import androidx.compose.ui.unit.dp
 
 // Shared palette/primitives for the recovery-menu-styled terminal look used
 // across every screen (see PLAN.md's UI/Visual design section).
+// FR-044: background stays pure black regardless of the selected palette
+// (preserves FR-002's visual identity) — only the accent colors below vary,
+// driven by whatever TerminalPalette is provided via LocalTerminalPalette at
+// the app root. Kept as top-level vals (not a parameter every call site must
+// thread through) via a @Composable getter, so none of the ~10 files already
+// referencing these by name needed to change.
 val TermBackground = Color.Black
-val TermForeground = Color(0xFF33FF66)
-val TermDim = Color(0xFF1F8A3D)
-val TermError = Color(0xFFFF5C5C)
-val TermUser = Color(0xFFEDEDED)
+val TermForeground: Color
+    @Composable get() = LocalTerminalPalette.current.foreground
+val TermDim: Color
+    @Composable get() = LocalTerminalPalette.current.dim
+val TermError: Color
+    @Composable get() = LocalTerminalPalette.current.error
+val TermUser: Color
+    @Composable get() = LocalTerminalPalette.current.user
 
 @Composable
 fun TerminalText(text: String, color: Color, modifier: Modifier = Modifier) {

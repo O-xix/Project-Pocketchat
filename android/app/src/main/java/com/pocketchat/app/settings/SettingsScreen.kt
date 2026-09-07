@@ -33,7 +33,9 @@ import com.pocketchat.app.ui.TermBackground
 import com.pocketchat.app.ui.TermDim
 import com.pocketchat.app.ui.TermForeground
 import com.pocketchat.app.ui.TermUser
+import com.pocketchat.app.ui.TerminalFontSize
 import com.pocketchat.app.ui.TerminalMenuItem
+import com.pocketchat.app.ui.TerminalPalette
 import com.pocketchat.app.ui.TerminalText
 
 /**
@@ -58,6 +60,14 @@ fun SettingsScreen(onBack: () -> Unit, onOpenAbout: () -> Unit = {}, viewModel: 
             item { MemoryToggleSection(uiState.memoryEnabled, onSetEnabled = viewModel::setMemoryEnabled) }
             item { MemoryVoiceSection(uiState.memoryVoice, onSetVoice = viewModel::setMemoryVoice) }
             item { PersonaSection(uiState.personaOverride, onSave = viewModel::setPersonaOverride) }
+            item {
+                AppearanceSection(
+                    palette = uiState.terminalPalette,
+                    onSetPalette = viewModel::setTerminalPalette,
+                    fontSize = uiState.fontSize,
+                    onSetFontSize = viewModel::setFontSize,
+                )
+            }
             item { SlashCommandsSection(uiState.slashCommandsEnabled, onSetEnabled = viewModel::setSlashCommandsEnabled) }
             item { DebugLogSection() }
             item { TerminalMenuItem("[about]", onClick = onOpenAbout) }
@@ -65,6 +75,40 @@ fun SettingsScreen(onBack: () -> Unit, onOpenAbout: () -> Unit = {}, viewModel: 
 
         Spacer(Modifier.height(8.dp))
         TerminalMenuItem("[back]", onClick = onBack)
+    }
+}
+
+/**
+ * FR-044: distinct from NFR-016 (no dedicated screen-reader/TalkBack support,
+ * a deliberate, unrelated tradeoff) — this is about contrast and legibility
+ * for sighted users, not assistive-technology semantics. Every option
+ * changes the whole app immediately (this screen included) since colors and
+ * font size both flow from shared state at the app root, so the effect of a
+ * tap is visible right here without needing a separate preview swatch.
+ */
+@Composable
+private fun AppearanceSection(
+    palette: TerminalPalette,
+    onSetPalette: (TerminalPalette) -> Unit,
+    fontSize: TerminalFontSize,
+    onSetFontSize: (TerminalFontSize) -> Unit,
+) {
+    Column {
+        TerminalText("color palette", TermDim)
+        TerminalPalette.entries.forEach { option ->
+            TerminalMenuItem(
+                if (option == palette) "[${option.label}] (active)" else "[${option.label}]",
+                onClick = { onSetPalette(option) },
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        TerminalText("font size", TermDim)
+        TerminalFontSize.entries.forEach { option ->
+            TerminalMenuItem(
+                if (option == fontSize) "[${option.label}] (active)" else "[${option.label}]",
+                onClick = { onSetFontSize(option) },
+            )
+        }
     }
 }
 

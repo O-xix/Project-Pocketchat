@@ -4,6 +4,8 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import com.pocketchat.app.inference.MemoryVoice
 import com.pocketchat.app.models.SettingsStorage
+import com.pocketchat.app.ui.TerminalFontSize
+import com.pocketchat.app.ui.TerminalPalette
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -14,6 +16,8 @@ data class SettingsUiState(
     val memoryVoice: MemoryVoice = MemoryVoice.NEUTRAL,
     val personaOverride: String = "",
     val slashCommandsEnabled: Boolean = false,
+    val terminalPalette: TerminalPalette = TerminalPalette.GREEN,
+    val fontSize: TerminalFontSize = TerminalFontSize.MEDIUM,
 )
 
 /** FR-032: backs the settings screen; each setter writes through to [SettingsStorage] immediately. */
@@ -29,6 +33,8 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
             memoryVoice = SettingsStorage.memoryVoice(app),
             personaOverride = SettingsStorage.personaOverride(app) ?: "",
             slashCommandsEnabled = SettingsStorage.isSlashCommandsEnabled(app),
+            terminalPalette = SettingsStorage.terminalPalette(app),
+            fontSize = SettingsStorage.fontSize(app),
         )
     }
 
@@ -55,5 +61,17 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     fun setSlashCommandsEnabled(enabled: Boolean) {
         SettingsStorage.setSlashCommandsEnabled(getApplication(), enabled)
         _uiState.update { it.copy(slashCommandsEnabled = enabled) }
+    }
+
+    /** FR-044. Takes effect immediately app-wide — see PocketChatApp's CompositionLocalProvider. */
+    fun setTerminalPalette(palette: TerminalPalette) {
+        SettingsStorage.setTerminalPalette(getApplication(), palette)
+        _uiState.update { it.copy(terminalPalette = palette) }
+    }
+
+    /** FR-044. Takes effect immediately app-wide — see PocketChatApp's MaterialTheme typography override. */
+    fun setFontSize(size: TerminalFontSize) {
+        SettingsStorage.setFontSize(getApplication(), size)
+        _uiState.update { it.copy(fontSize = size) }
     }
 }
