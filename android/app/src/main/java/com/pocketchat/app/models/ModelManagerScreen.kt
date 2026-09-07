@@ -1,5 +1,7 @@
 package com.pocketchat.app.models
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -14,6 +16,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -25,6 +30,7 @@ import com.pocketchat.app.ui.TermError
 import com.pocketchat.app.ui.TermForeground
 import com.pocketchat.app.ui.TerminalMenuItem
 import com.pocketchat.app.ui.TerminalText
+import com.pocketchat.app.ui.TerminalTextField
 
 @Composable
 fun ModelManagerScreen(onBack: () -> Unit, viewModel: ModelManagerViewModel = viewModel()) {
@@ -35,6 +41,15 @@ fun ModelManagerScreen(onBack: () -> Unit, viewModel: ModelManagerViewModel = vi
     // chat session in between visits wouldn't show until process restart.
     LaunchedEffect(Unit) { viewModel.refresh() }
 
+    // FR-012: SAF file picker -- Compose's own wrapper around the Activity
+    // Result API, so this doesn't need MainActivity to thread a callback all
+    // the way down through the screen hierarchy.
+    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) viewModel.importLocalFile(uri)
+    }
+    var showCustomImport by remember { mutableStateOf(false) }
+    var customUrl by remember { mutableStateOf("") }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -44,7 +59,37 @@ fun ModelManagerScreen(onBack: () -> Unit, viewModel: ModelManagerViewModel = vi
         TerminalText("pocketchat> model manager", TermForeground)
         Spacer(Modifier.height(4.dp))
         TerminalText("detected: ${formatSize(uiState.totalRamBytes)} ram, tier: ${uiState.ramTier.label}", TermDim)
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(4.dp))
+
+        // FR-012
+        TerminalMenuItem(
+            if (showCustomImport) "[+ custom model: x]" else "[+ custom model]",
+            onClick = { showCustomImport = !showCustomImport },
+        )
+        if (showCustomImport) {
+            TerminalTextField("url> ", customUrl, onValueChange = { customUrl = it })
+            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                TerminalMenuItem(
+                    "[download url]",
+                    onClick = {
+                        if (customUrl.isNotBlank()) {
+                            viewModel.addCustomUrlModel(customUrl)
+                            customUrl = ""
+                            showCustomImport = false
+                        }
+                    },
+                )
+                // GGUF has no registered MIME type, so this deliberately
+                // accepts any file — isValidGgufFile() is the real gate,
+                // checked after picking, not this filter.
+                TerminalMenuItem("[pick file]", onClick = { filePicker.launch(arrayOf("*/*")) })
+            }
+        }
+        uiState.importError?.let { message ->
+            TerminalText("import failed: $message", TermError)
+            TerminalMenuItem("[ok]", onClick = viewModel::dismissImportError)
+        }
+        Spacer(Modifier.height(8.dp))
 
         LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             items(uiState.rows, key = { it.entry.id }) { row ->
@@ -55,6 +100,7 @@ fun ModelManagerScreen(onBack: () -> Unit, viewModel: ModelManagerViewModel = vi
                     onPause = { viewModel.pauseDownload(row.entry) },
                     onResume = { viewModel.download(row.entry) },
                     onDiscard = { viewModel.discardDownload(row.entry) },
+                    onCancelQueued = { viewModel.cancelQueuedDownload(row.entry) },
                     onDelete = { viewModel.delete(row.entry) },
                     onActivate = { viewModel.setActive(row.entry) },
                 )
@@ -74,6 +120,7 @@ private fun ModelRowView(
     onPause: () -> Unit,
     onResume: () -> Unit,
     onDiscard: () -> Unit,
+    onCancelQueued: () -> Unit,
     onDelete: () -> Unit,
     onActivate: () -> Unit,
 ) {
@@ -89,6 +136,14 @@ private fun ModelRowView(
             is ModelRowStatus.NotDownloaded -> {
                 Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                     TerminalMenuItem("[download]", onDownload)
+                }
+            }
+
+            is ModelRowStatus.Queued -> {
+                // NFR-019: only one download runs at a time -- this one is waiting.
+                TerminalText("queued (#${status.position})", TermDim)
+                Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    TerminalMenuItem("[cancel]", onCancelQueued)
                 }
             }
 

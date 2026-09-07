@@ -7,6 +7,9 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.net.Uri
+import android.os.StatFs
+import android.provider.OpenableColumns
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import java.io.File
@@ -33,13 +36,15 @@ private const val MAX_BACKOFF_MILLIS = 30_000L
 
 sealed interface ModelRowStatus {
     data object NotDownloaded : ModelRowStatus
+    /** NFR-019: waiting for the currently-active download (elsewhere in the list) to finish. */
+    data class Queued(val position: Int) : ModelRowStatus
     data class Downloading(val downloadedBytes: Long, val totalBytes: Long) : ModelRowStatus
     /** Actively retrying on its own (network hiccup or waiting for connectivity) — [pause] still works, no [resume] needed. */
     data class Reconnecting(val downloadedBytes: Long, val totalBytes: Long, val reason: String) : ModelRowStatus
     /** Stopped and waiting for the user — either they tapped pause, or a partial file was found at app start. */
     data class Paused(val downloadedBytes: Long, val totalBytes: Long, val reason: String) : ModelRowStatus
     data object Downloaded : ModelRowStatus
-    /** Not resumable — e.g. a real 404. The partial file (if any) has been discarded. */
+    /** Not resumable — e.g. a real 404, or FR-037's storage check failing. The partial file (if any) has been discarded. */
     data class Failed(val message: String) : ModelRowStatus
 }
 
@@ -51,6 +56,8 @@ data class ModelManagerUiState(
     val ramTier: RamTier = RamTier.FLOOR,
     val activeModelFilename: String? = null,
     val rows: List<ModelRow> = emptyList(),
+    /** FR-012: set when a local-file import fails before a row for it even exists to show a Failed status on. */
+    val importError: String? = null,
 )
 
 /** Retrying won't fix this (e.g. 404) — as opposed to network hiccups or transient 5xx/429s. */
@@ -63,6 +70,10 @@ class ModelManagerViewModel(app: Application) : AndroidViewModel(app) {
 
     private val downloadJobs = mutableMapOf<String, Job>()
 
+    /** NFR-019: only one entry downloads at a time; everything else waits here. */
+    private val downloadQueue = ArrayDeque<ModelCatalogEntry>()
+    private var activeDownloadEntryId: String? = null
+
     init {
         refresh()
     }
@@ -72,16 +83,20 @@ class ModelManagerViewModel(app: Application) : AndroidViewModel(app) {
         val app = getApplication<Application>()
         val downloadedFilenames = ModelStorage.downloadedModels(app).map { it.name }.toSet()
         val totalRam = detectTotalRamBytes(app)
+        // FR-012: user-imported entries live alongside the static catalog, not
+        // in place of it — same row treatment (download/activate/delete) either way.
+        val allEntries = ModelCatalog.entries + CustomModelStorage.list(app)
 
         _uiState.update { state ->
-            val rows = ModelCatalog.entries.map { entry ->
+            val rows = allEntries.map { entry ->
                 val existingStatus = state.rows.find { it.entry.id == entry.id }?.status
                 val partial = partialFile(app, entry)
                 val status = when {
-                    // Don't clobber an in-flight/pausable state with a plain re-scan.
+                    // Don't clobber an in-flight/pausable/queued state with a plain re-scan.
                     existingStatus is ModelRowStatus.Downloading -> existingStatus
                     existingStatus is ModelRowStatus.Reconnecting -> existingStatus
                     existingStatus is ModelRowStatus.Paused -> existingStatus
+                    existingStatus is ModelRowStatus.Queued -> existingStatus
                     entry.filename in downloadedFilenames -> ModelRowStatus.Downloaded
                     // A .part file with no in-memory state means the app was killed
                     // mid-download — surface it as resumable rather than losing it.
@@ -99,14 +114,75 @@ class ModelManagerViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Starts a fresh download, or resumes one from a partial file left by a pause/interruption. */
+    /**
+     * Starts a fresh download, or resumes one from a partial file left by a
+     * pause/interruption. NFR-019: if a different entry is already
+     * downloading, this one queues instead of starting immediately — only
+     * one download runs at a time, to keep FR-005's resumable-download state
+     * machine simple to reason about.
+     */
     fun download(entry: ModelCatalogEntry) {
         if (downloadJobs[entry.id]?.isActive == true) return
+        if (activeDownloadEntryId != null && activeDownloadEntryId != entry.id) {
+            if (downloadQueue.none { it.id == entry.id }) downloadQueue.addLast(entry)
+            refreshQueuePositions()
+            return
+        }
+        startDownloadNow(entry)
+    }
+
+    /** NFR-019: pulls a not-yet-started entry back out of the queue. */
+    fun cancelQueuedDownload(entry: ModelCatalogEntry) {
+        downloadQueue.removeAll { it.id == entry.id }
+        updateRowStatus(entry.id, ModelRowStatus.NotDownloaded)
+        refreshQueuePositions()
+    }
+
+    private fun startDownloadNow(entry: ModelCatalogEntry) {
+        val app = getApplication<Application>()
+        val existingBytes = partialFile(app, entry).length()
+
+        // FR-037: check remaining bytes (not the full size) against free space,
+        // so a resumed download isn't blocked by space it doesn't actually need
+        // anymore. Skipped for a size we don't know ahead of time (a freshly
+        // added custom URL entry — see addCustomUrlModel) rather than guessing.
+        if (entry.approxSizeBytes > 0) {
+            val remaining = (entry.approxSizeBytes - existingBytes).coerceAtLeast(0)
+            val available = StatFs(ModelStorage.modelsDir(app).path).availableBytes
+            if (available < remaining) {
+                updateRowStatus(
+                    entry.id,
+                    ModelRowStatus.Failed("not enough free storage — need ~${formatBytes(remaining)} more, only ${formatBytes(available)} free"),
+                )
+                return
+            }
+        }
+
+        activeDownloadEntryId = entry.id
         // Immediate feedback — downloadOnce() posts its first real update only once
         // bytes actually start arriving, which can lag behind the tap on a slow link.
-        val existingBytes = partialFile(getApplication<Application>(), entry).length()
         updateRowStatus(entry.id, ModelRowStatus.Downloading(existingBytes, entry.approxSizeBytes))
-        downloadJobs[entry.id] = viewModelScope.launch(Dispatchers.IO) { runDownload(entry) }
+        downloadJobs[entry.id] = viewModelScope.launch(Dispatchers.IO) {
+            try {
+                runDownload(entry)
+            } finally {
+                // Runs on every exit path (success, permanent failure, or the
+                // user cancelling via pause/discard) — frees the "one at a
+                // time" slot for whatever's next in line either way.
+                if (activeDownloadEntryId == entry.id) activeDownloadEntryId = null
+                startNextQueued()
+            }
+        }
+    }
+
+    private fun startNextQueued() {
+        val next = downloadQueue.removeFirstOrNull() ?: return
+        refreshQueuePositions()
+        startDownloadNow(next)
+    }
+
+    private fun refreshQueuePositions() {
+        downloadQueue.forEachIndexed { index, entry -> updateRowStatus(entry.id, ModelRowStatus.Queued(index + 1)) }
     }
 
     /** Stops an active/reconnecting download without discarding progress — resumable via [download]. */
@@ -124,7 +200,89 @@ class ModelManagerViewModel(app: Application) : AndroidViewModel(app) {
     fun delete(entry: ModelCatalogEntry) {
         val app = getApplication<Application>()
         ModelStorage.deleteModel(app, File(ModelStorage.modelsDir(app), entry.filename))
+        // A harmless no-op for a catalog entry that was never custom — only
+        // actually removes anything for a user-imported one (FR-012), so it
+        // doesn't reappear as a phantom "not downloaded" row forever.
+        CustomModelStorage.remove(app, entry.id)
         refresh()
+    }
+
+    /**
+     * FR-012: registers a direct .gguf URL as a new downloadable entry and
+     * starts it immediately. [approxSizeBytes] is left at 0 (unknown ahead of
+     * time for an arbitrary URL) — the real total is resolved from the
+     * response's actual Content-Length once the download starts; FR-037's
+     * storage check is skipped for this entry until then rather than guessing.
+     */
+    fun addCustomUrlModel(url: String) {
+        val trimmedUrl = url.trim()
+        if (trimmedUrl.isEmpty()) return
+        val app = getApplication<Application>()
+        val baseName = trimmedUrl.substringAfterLast('/').substringBefore('?').ifBlank { "custom-model" }
+        val filename = if (baseName.endsWith(".gguf", ignoreCase = true)) baseName else "$baseName.gguf"
+        val entry = ModelCatalogEntry(
+            id = "custom-$filename",
+            displayName = filename.removeSuffix(".gguf"),
+            quant = "custom",
+            url = trimmedUrl,
+            filename = filename,
+            approxSizeBytes = 0L,
+            tier = RamTier.FLOOR, // unknown fit for this hardware -- FLOOR is a label here, not an enforced gate (NFR-014)
+        )
+        CustomModelStorage.add(app, entry)
+        refresh()
+        download(entry)
+    }
+
+    /**
+     * FR-012: copies a Storage-Access-Framework-picked file into the app's
+     * own models directory (native `nativeLoadModel` needs a real filesystem
+     * path, not a content:// URI) and validates its GGUF header before
+     * registering it — an invalid file is deleted immediately rather than
+     * left around to fail unhelpfully later inside core/inference.
+     */
+    fun importLocalFile(uri: Uri) {
+        val app = getApplication<Application>()
+        viewModelScope.launch(Dispatchers.IO) {
+            val baseName = queryDisplayName(app, uri) ?: "imported-${System.currentTimeMillis()}"
+            val filename = if (baseName.endsWith(".gguf", ignoreCase = true)) baseName else "$baseName.gguf"
+            val dest = File(ModelStorage.modelsDir(app), filename)
+            try {
+                val opened = app.contentResolver.openInputStream(uri)?.use { input ->
+                    dest.outputStream().use { output -> input.copyTo(output) }
+                    true
+                } ?: false
+                if (!opened) {
+                    _uiState.update { it.copy(importError = "couldn't open the picked file") }
+                    return@launch
+                }
+                if (!isValidGgufFile(dest)) {
+                    dest.delete()
+                    _uiState.update { it.copy(importError = "not a valid GGUF file (missing GGUF header) — nothing was imported") }
+                    return@launch
+                }
+                CustomModelStorage.add(
+                    app,
+                    ModelCatalogEntry(
+                        id = "custom-$filename",
+                        displayName = filename.removeSuffix(".gguf"),
+                        quant = "custom",
+                        url = "", // imported directly, not downloaded -- no remote source to record
+                        filename = filename,
+                        approxSizeBytes = dest.length(),
+                        tier = RamTier.FLOOR,
+                    ),
+                )
+                refresh()
+            } catch (e: Exception) {
+                dest.delete()
+                _uiState.update { it.copy(importError = e.message ?: "import failed") }
+            }
+        }
+    }
+
+    fun dismissImportError() {
+        _uiState.update { it.copy(importError = null) }
     }
 
     fun setActive(entry: ModelCatalogEntry) {
@@ -266,6 +424,19 @@ private fun detectTotalRamBytes(context: Context): Long {
     val info = ActivityManager.MemoryInfo()
     activityManager.getMemoryInfo(info)
     return info.totalMem
+}
+
+/** FR-012: SAF only gives a content:// URI — this is how you ask it what the user would recognize as the filename. */
+private fun queryDisplayName(context: Context, uri: Uri): String? =
+    context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+        val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+        if (index >= 0 && cursor.moveToFirst()) cursor.getString(index) else null
+    }
+
+/** FR-037: same shape as ModelManagerScreen's formatSize, kept separate since that one's UI-layer-private. */
+private fun formatBytes(bytes: Long): String {
+    val gb = bytes / 1024.0 / 1024.0 / 1024.0
+    return if (gb >= 1.0) "%.1fgb".format(gb) else "%.0fmb".format(bytes / 1024.0 / 1024.0)
 }
 
 /** A bare status code isn't self-explanatory to someone who isn't reading HTTP specs. */

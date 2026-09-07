@@ -21,7 +21,7 @@ Living spec. Every requirement gets a stable, unique code (`FR-NNN` / `NFR-NNN`)
 | FR-009 | Memory injected as chat context automatically | Done | 3 | — |
 | FR-010 | Memory-update progress monitoring UI | Done | 3 | — |
 | FR-011 | Memory viewer screen (read-only) | Done | 3 | — |
-| FR-012 | Bring-your-own-model (custom GGUF import) | Planned | 2 | PRO-6 |
+| FR-012 | Bring-your-own-model (custom GGUF import) | Done | 2 | PRO-6 |
 | FR-013 | Memory retrieval by relevance, not recency (FTS5) | Done | 3 | PRO-9 |
 | FR-014 | Configurable memory voice/mode | Done | 3 | PRO-10 |
 | FR-015 | Offline safety filtering — tier 1 (deterministic lexical filter) | Done | new | PRO-7 |
@@ -44,9 +44,9 @@ Living spec. Every requirement gets a stable, unique code (`FR-NNN` / `NFR-NNN`)
 | FR-032 | Dedicated Settings screen | Done | 2 | PRO-27 |
 | FR-033 | Selective memory deletion (individual summary/fact) | Done | 3 | PRO-28 |
 | FR-034 | Model switch replays transcript as real context, not just display | Done | 2 | PRO-29 |
-| FR-035 | Specific explanation shown when a prompt is safety-blocked | Idea | new | PRO-30 |
+| FR-035 | Specific explanation shown when a prompt is safety-blocked | Done | new | PRO-30 |
 | FR-036 | First-launch onboarding/setup screen | Idea (deferred) | 2 | PRO-16 |
-| FR-037 | Free-storage check before model download | Idea | 2 | PRO-31 |
+| FR-037 | Free-storage check before model download | Done | 2 | PRO-31 |
 | FR-038 | Per-message copy/share actions | Done | 2 | PRO-32 |
 | FR-039 | About/legal screen (license, version, source link) | Idea | 2 | PRO-33 |
 | FR-040 | Search within the live (not-yet-summarized) chat scrollback | Done | 2 | PRO-34 |
@@ -103,6 +103,7 @@ A screen to view `profile.txt` and all summaries, sorted newest-first.
 Accept a direct `.gguf` URL or local file (Storage Access Framework) instead of only the hardcoded catalog, with a GGUF-header validation check before treating it as loadable.
 **Why:** `docs/research-consumer-demand-and-engineering.md` — BYOM is a named demand driver among advanced local-AI users; current `ModelCatalog.kt` is a 3-entry hardcoded list.
 **Safety note:** FR-015's tier-1 filter operates on prompts at the `core/` level regardless of which model is active, so BYOM needs no additional per-model safety restriction beyond the GGUF-header validity check — see NFR-013.
+**Shipped:** both input modes. A pasted URL (`ModelManagerViewModel.addCustomUrlModel`) constructs a `ModelCatalogEntry` with `approxSizeBytes = 0` (unknown ahead of time for an arbitrary link — resolved from the real `Content-Length` once the download's response headers arrive, same as the existing catalog download path) and reuses the existing resumable-download machinery unchanged. A local file (SAF, `ActivityResultContracts.OpenDocument()` via Compose's `rememberLauncherForActivityResult`) is copied into the app's own models directory — `nativeLoadModel` needs a real filesystem path, not a `content://` URI — then validated. **GGUF validation:** `isValidGgufFile` (`ModelStorage.kt`) checks the first 4 bytes match the GGUF spec's magic ("GGUF" in ASCII); an invalid file is deleted immediately with a specific error rather than left around to fail unhelpfully later inside `core/inference`. Both paths persist through `CustomModelStorage` — a plain JSON file living alongside the `.gguf` files it describes (matching `ChatStorage`'s plain-file pattern for a structured list) — merged with `ModelCatalog.entries` in `refresh()`, so custom entries get identical row treatment (download/activate/delete) to catalog ones. Deleting a custom entry also removes its `CustomModelStorage` record (a no-op for a real catalog entry) so it doesn't reappear as a phantom row.
 
 ### FR-013 — Memory retrieval by relevance, not recency
 Replace `pc_memory_build_context`'s most-recent-N-summaries selection with a SQLite FTS5 (BM25) query against the current conversation, falling back to recency when there's no strong match. The `.txt` files remain the single source of truth; the FTS5 index is a derived, rebuildable artifact.
@@ -220,6 +221,7 @@ When switching the active model (FR-003), the existing visible messages must be 
 ### FR-035 — Specific explanation shown when a prompt is safety-blocked
 When FR-015's tier-1 filter blocks a prompt, tell the user their prompt was blocked and roughly why (e.g. "matched a restricted content pattern"), rather than a generic refusal or silent failure.
 **Why:** consistent with NFR-011's philosophy of naming the actual trigger rather than a vague status — a legitimate user who hits a false positive (e.g. an austere-operator survival question brushing against a precursor-chemical pattern) needs enough information to understand what happened and rephrase, not just a dead end.
+**Shipped — already, as it turns out:** this was implemented as part of FR-015/PRO-7's own work (`ChatViewModel.sendMessage()` sets `uiState.error = "prompt blocked — matched a restricted content pattern (${safety.category})"` when `PocketChatSafety.check()` flags a prompt), with a comment at the time explicitly noting this ticket by number and deliberately not expanding beyond a plain error message. This pass just formalizes that reality in tracking — no new code was needed. Deeper UX (distinct visual treatment, softer false-positive-specific wording) remains out of scope here, same as originally noted.
 
 ### FR-036 — First-launch onboarding/setup screen
 A one-time first-launch screen surfacing the memory on/off (FR-020) and memory voice (FR-014) choices explicitly, instead of the user discovering them later in Settings (FR-032).
@@ -229,6 +231,7 @@ A one-time first-launch screen surfacing the memory on/off (FR-020) and memory v
 ### FR-037 — Free-storage check before model download
 Before starting a model download (FR-003/FR-012), check available device storage against the catalog entry's `approxSizeBytes` (or the target file's reported size for BYOM) and warn if insufficient, rather than letting a multi-GB download fail partway through.
 **Why:** a write failure discovered halfway through a long download on a slow connection (see FR-005's real-world spotty-network context) is a worse experience than an upfront warning that costs almost nothing to check.
+**Shipped:** `ModelManagerViewModel.startDownloadNow()` checks `StatFs(modelsDir).availableBytes` against the *remaining* bytes needed (`approxSizeBytes` minus whatever a partial file already has — a resumed download isn't blocked by space it no longer needs), reusing the existing `Failed` status/UI (with a specific message, e.g. "need ~1.2gb more, only 300mb free") rather than inventing a new status type. Skipped entirely for FR-012's custom-URL entries before their real size is known (`approxSizeBytes == 0`) rather than guessing.
 
 ### FR-038 — Per-message copy/share actions
 Let the user copy or share the text of an individual chat message (e.g. a long-press action), rather than only being able to export the whole memory record (FR-019, which covers `profile.txt`/summaries, not raw chat messages).
@@ -285,7 +288,7 @@ Track and display, per model, a rolling average of time-to-first-token and token
 | NFR-016 | Visual-only UI, no dedicated screen-reader support | Done (by decision) | — | — |
 | NFR-017 | English-only, no localization scaffolding | Done (by decision) | — | — |
 | NFR-018 | Destructive actions require confirmation | Done | 2, 3 | PRO-39 |
-| NFR-019 | Model downloads are sequential, one at a time | Idea | 2 | PRO-40 |
+| NFR-019 | Model downloads are sequential, one at a time | Done | 2 | PRO-40 |
 | NFR-020 | No memory format versioning for now (decision recorded) | Done (by decision) | 3 | — |
 | NFR-021 | All user-facing errors state the specific cause | Done | 1, 2 | PRO-41 |
 
@@ -371,6 +374,7 @@ Deleting a model (FR-003), deleting an individual memory item (FR-033), and togg
 ### NFR-019 — Model downloads are sequential, one at a time
 Only one model download runs at a time; starting a new one queues behind (or requires completing/canceling) any in-progress download, rather than running several resumable downloads concurrently.
 **Why:** keeps the resumable-download state machine (FR-005) — already the hard-won piece of this app, built directly from real spotty-mobile-network failures — simpler to reason about, at the cost of a marginal convenience for a use case (bulk-downloading many models at once) that isn't the common case.
+**Shipped:** the queueing variant, not the "requires completing/canceling" alternative — a new `ModelRowStatus.Queued(position)` and an `ArrayDeque` in `ModelManagerViewModel`. Starting a second download while one is active enqueues it instead of blocking the tap outright; the active download's job wraps `runDownload()` in a `finally` block that clears the "active" slot and starts the next queued entry on every exit path (success, permanent failure, or the user explicitly pausing/discarding) — pausing or discarding the current download is treated as freeing the slot on purpose, which reads as the expected behavior for a deliberate user action. A `[cancel]` action lets the user pull a not-yet-started entry back out of the queue.
 
 ### NFR-020 — No memory format versioning for now
 `profile.txt`/`summaries/*.txt` carry no explicit format-version marker. This is a deliberate decision, not an oversight — recorded here so it doesn't get silently re-litigated.

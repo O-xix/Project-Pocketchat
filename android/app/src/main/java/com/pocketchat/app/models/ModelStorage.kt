@@ -45,3 +45,21 @@ object ModelStorage {
 
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 }
+
+/** FR-012: the GGUF spec's magic bytes ("GGUF" in ASCII) must be the first 4 bytes of a valid file. */
+private val GGUF_MAGIC = byteArrayOf('G'.code.toByte(), 'G'.code.toByte(), 'U'.code.toByte(), 'F'.code.toByte())
+
+/**
+ * Cheap, real validation before treating a picked/downloaded file as a
+ * loadable model — `core/inference`'s `nativeLoadModel` would otherwise fail
+ * on it far less helpfully than this can up front.
+ */
+fun isValidGgufFile(file: File): Boolean {
+    if (!file.exists() || file.length() < 4) return false
+    return try {
+        val header = ByteArray(4)
+        file.inputStream().use { it.read(header) } == 4 && header.contentEquals(GGUF_MAGIC)
+    } catch (_: Exception) {
+        false
+    }
+}
