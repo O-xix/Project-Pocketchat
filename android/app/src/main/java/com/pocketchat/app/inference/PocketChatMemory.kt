@@ -4,6 +4,9 @@ import java.io.File
 
 enum class MemoryPhase { EXTRACTING_FACTS, SUMMARIZING }
 
+/** FR-014: which framing [PocketChatMemory.updateSession] uses for its extraction/summarization prompts. */
+enum class MemoryVoice { NEUTRAL, REFLECTIVE }
+
 /** [timestamp] is the summary's base filename — pass it to [PocketChatMemory.deleteSummary]. */
 data class MemorySearchResult(val timestamp: String, val content: String, val annotation: String)
 
@@ -34,11 +37,17 @@ object PocketChatMemory {
      * tagged with which one — for showing live progress instead of an opaque
      * spinner. Return `false` from it to stop that phase's generation early
      * (the update as a whole still completes normally).
+     *
+     * [voice] (FR-014) picks the extraction/summarization framing; defaults
+     * to [MemoryVoice.NEUTRAL]. Both voices still constrain profile.txt to
+     * one fact per line — only each line's wording changes — since FR-033's
+     * per-line fact deletion depends on that structure regardless of voice.
      */
     fun updateSession(
         model: PocketChatModel,
         memoryDir: File,
         messages: List<ChatMessage>,
+        voice: MemoryVoice = MemoryVoice.NEUTRAL,
         nCtx: Int = 0,
         nThreads: Int = -1,
         onProgress: ((phase: MemoryPhase, piece: String) -> Boolean)? = null,
@@ -53,7 +62,7 @@ object PocketChatMemory {
             }
         }
         val rc = PocketChatEngine.nativeMemoryUpdateSession(
-            model.handle, memoryDir.absolutePath, roles, contents, nCtx, nThreads, callback,
+            model.handle, memoryDir.absolutePath, roles, contents, voice.ordinal, nCtx, nThreads, callback,
         )
         if (rc != 0) {
             throw PocketChatException(PocketChatEngine.nativeMemoryLastError())

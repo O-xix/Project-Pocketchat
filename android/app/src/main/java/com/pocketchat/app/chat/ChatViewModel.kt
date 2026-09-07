@@ -15,6 +15,7 @@ import com.pocketchat.app.models.BundledModel
 import com.pocketchat.app.models.ChatStorage
 import com.pocketchat.app.models.MemoryStorage
 import com.pocketchat.app.models.ModelStorage
+import com.pocketchat.app.models.SettingsStorage
 import com.pocketchat.app.power.DeviceStressMonitor
 import com.pocketchat.app.power.ThrottleStatus
 import kotlinx.coroutines.Dispatchers
@@ -109,16 +110,25 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * FR-013: rebuilt fresh for every turn — [query] (the user's just-typed
-     * message) lets FTS5/BM25 pick summaries relevant to what's actually
+     * Rebuilt fresh for every turn — [query] (the user's just-typed message)
+     * lets FR-013's FTS5/BM25 pick summaries relevant to what's actually
      * being discussed right now, rather than a static set of the most recent
      * ones fixed at model-load time. Falls back to plain recency automatically
      * (see PocketChatMemory.buildContext's doc comment) when there's no
      * strong match, including the very first turn of a fresh conversation.
+     *
+     * FR-031: [SettingsStorage.personaOverride], when set, replaces
+     * [BASE_SYSTEM_PROMPT] as the base — but memory context is still layered
+     * on top of either one, since a persona is "on top of" baseline
+     * continuity per that ticket's own framing, not a replacement for it.
+     * FR-020: memory context is skipped entirely while memory is disabled.
      */
     private fun buildSystemPrompt(query: String): String {
-        val remembered = PocketChatMemory.buildContext(MemoryStorage.memoryDir(getApplication()), query = query)
-        return if (remembered.isBlank()) BASE_SYSTEM_PROMPT else "$BASE_SYSTEM_PROMPT\n\n$remembered"
+        val app = getApplication<Application>()
+        val base = SettingsStorage.personaOverride(app) ?: BASE_SYSTEM_PROMPT
+        if (!SettingsStorage.isMemoryEnabled(app)) return base
+        val remembered = PocketChatMemory.buildContext(MemoryStorage.memoryDir(app), query = query)
+        return if (remembered.isBlank()) base else "$base\n\n$remembered"
     }
 
     /**
@@ -268,9 +278,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      * useful than an opaque "updating memory" spinner. Never throws —
      * failures are swallowed (a stale memory isn't worth surfacing an error
      * over) and the next update will just cover a longer span; progress is
-     * always cleared before returning either way.
+     * always cleared before returning either way. FR-020: a no-op entirely
+     * while memory is disabled — "no fact extraction, no summaries" per that
+     * ticket, checked here rather than at each call site.
      */
     private fun forceMemoryUpdate() {
+        val app = getApplication<Application>()
+        if (!SettingsStorage.isMemoryEnabled(app)) return
         val currentModel = model ?: return
         val messages = _uiState.value.messages
         if (messages.size <= lastMemoryUpdateIndex) return // nothing new since the last update
@@ -288,7 +302,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             // in that case, which FR-022's review prompt must never show.
             val summaryBuffer = StringBuilder()
             PocketChatMemory.updateSession(
-                currentModel, MemoryStorage.memoryDir(getApplication()), unsummarized,
+                currentModel, MemoryStorage.memoryDir(app), unsummarized,
+                voice = SettingsStorage.memoryVoice(app), // FR-014
             ) { phase, piece ->
                 if (phase != currentPhase) {
                     currentPhase = phase

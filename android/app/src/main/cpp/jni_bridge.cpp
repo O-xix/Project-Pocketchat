@@ -226,6 +226,7 @@ Java_com_pocketchat_app_inference_PocketChatEngine_nativeMemoryUpdateSession(
         JNIEnv * env, jclass,
         jlong model_handle, jstring j_memory_dir,
         jobjectArray roles, jobjectArray contents,
+        jint voice,
         jint n_ctx, jint n_threads,
         jobject progress_callback) {
     auto * model = reinterpret_cast<pc_model *>(model_handle);
@@ -241,7 +242,7 @@ Java_com_pocketchat_app_inference_PocketChatEngine_nativeMemoryUpdateSession(
     JniMemoryProgressCallback jni_cb{ env, progress_callback, method };
 
     const int rc = pc_memory_update_session(
-        model, memory_dir, msgs.data(), msgs.size(), (uint32_t) n_ctx, (int32_t) n_threads,
+        model, memory_dir, msgs.data(), msgs.size(), (pc_memory_voice) voice, (uint32_t) n_ctx, (int32_t) n_threads,
         progress_callback ? jni_memory_progress_callback : nullptr,
         progress_callback ? &jni_cb : nullptr);
     if (rc != 0) {

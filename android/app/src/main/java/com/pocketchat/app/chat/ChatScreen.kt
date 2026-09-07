@@ -49,6 +49,7 @@ import com.pocketchat.app.ui.TerminalText
 fun ChatScreen(
     onOpenModelManager: () -> Unit,
     onOpenMemoryViewer: () -> Unit,
+    onOpenSettings: () -> Unit,
     viewModel: ChatViewModel = viewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -62,6 +63,7 @@ fun ChatScreen(
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             TerminalMenuItem("[models]", onClick = onOpenModelManager)
             TerminalMenuItem("[memory]", onClick = onOpenMemoryViewer)
+            TerminalMenuItem("[settings]", onClick = onOpenSettings)
             // FR-029: folds whatever's unsummarized into memory before wiping
             // the transcript — see ChatViewModel.clearChat()'s doc comment.
             ConfirmableMenuItem("[clear]", "[confirm clear]", onConfirmed = viewModel::clearChat)

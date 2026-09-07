@@ -17,6 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.pocketchat.app.ui.ConfirmableMenuItem
 import com.pocketchat.app.ui.TermBackground
 import com.pocketchat.app.ui.TermDim
 import com.pocketchat.app.ui.TermError
@@ -115,7 +116,8 @@ private fun ModelRowView(
                     } else {
                         TerminalMenuItem("[activate]", onActivate)
                     }
-                    TerminalMenuItem("[delete]", onDelete)
+                    // NFR-018: deleting a downloaded model is irreversible (re-download required).
+                    ConfirmableMenuItem("[delete]", "[confirm delete]", onConfirmed = onDelete)
                 }
             }
 

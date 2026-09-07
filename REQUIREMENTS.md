@@ -23,13 +23,13 @@ Living spec. Every requirement gets a stable, unique code (`FR-NNN` / `NFR-NNN`)
 | FR-011 | Memory viewer screen (read-only) | Done | 3 | — |
 | FR-012 | Bring-your-own-model (custom GGUF import) | Planned | 2 | PRO-6 |
 | FR-013 | Memory retrieval by relevance, not recency (FTS5) | Done | 3 | PRO-9 |
-| FR-014 | Configurable memory voice/mode | Planned | 3 | PRO-10 |
+| FR-014 | Configurable memory voice/mode | Done | 3 | PRO-10 |
 | FR-015 | Offline safety filtering — tier 1 (deterministic lexical filter) | Done | new | PRO-7 |
 | FR-016 | iOS app | Not started | 4 | PRO-17 |
 | FR-017 | Curated model-tiering docs (`docs/models.md`) | Not started | 6 | PRO-18 |
 | FR-018 | Semantic/vector memory search | Deferred | 3 | PRO-11 |
 | FR-019 | Memory export/backup (single zip via share sheet) | Idea | 3 | PRO-19 |
-| FR-020 | Memory on/off toggle (privacy opt-out) | Idea | 3 | PRO-20 |
+| FR-020 | Memory on/off toggle (privacy opt-out) | Done | 3 | PRO-20 |
 | FR-021 | Manual debug/crash log export | Idea | — | PRO-21 |
 | FR-022 | Post-session summary review prompt (in-app) | Done | 3 | PRO-22 |
 | FR-023 | User-authored annotations on summaries | Done | 3 | PRO-23 |
@@ -40,8 +40,8 @@ Living spec. Every requirement gets a stable, unique code (`FR-NNN` / `NFR-NNN`)
 | FR-028 | Stop generation (ESC/stop button), edit-and-resubmit | Idea | 1, 2 | PRO-25 |
 | FR-029 | Clear/reset visible chat, with pre-clear summary | Done | 2, 3 | PRO-26 |
 | FR-030 | Regenerate last response | Idea (uncommitted) | 2 | — |
-| FR-031 | Custom system prompt / persona override | Idea | 2 | PRO-15 |
-| FR-032 | Dedicated Settings screen | Idea | 2 | PRO-27 |
+| FR-031 | Custom system prompt / persona override | Done | 2 | PRO-15 |
+| FR-032 | Dedicated Settings screen | Done | 2 | PRO-27 |
 | FR-033 | Selective memory deletion (individual summary/fact) | Done | 3 | PRO-28 |
 | FR-034 | Model switch replays transcript as real context, not just display | Done | 2 | PRO-29 |
 | FR-035 | Specific explanation shown when a prompt is safety-blocked | Idea | new | PRO-30 |
@@ -115,6 +115,7 @@ Replace `pc_memory_build_context`'s most-recent-N-summaries selection with a SQL
 A setting controlling the extraction/summarization system prompt: neutral-factual (default) vs. an opt-in reflective/experience-validating mode.
 **Why:** the original memory design assumed one voice (an assistant that validates the user's experience), but PocketChat's user archetypes diverge — a privacy-maximalist professional wants factual continuity, not emotional reflection; see the archetype table in `docs/research-sovereign-on-device-llms.md`.
 **Related:** distinct from FR-020 (turning memory off entirely) — this changes memory's *tone*, FR-020 changes whether it *exists* for this user at all.
+**Shipped:** `pc_memory_update_session` (core/memory) takes a new `pc_memory_voice` argument (`PC_MEMORY_VOICE_NEUTRAL` default, `PC_MEMORY_VOICE_REFLECTIVE`) and branches both the fact-extraction and summarization prompts on it. **Both branches still require "plain short lines" for profile.txt** — REFLECTIVE only changes each line's wording (warmer, validating) not the document's structure, since FR-033's per-line fact deletion depends on that structure regardless of voice; this constraint was caught and applied deliberately, not an oversight. `SettingsScreen.kt` exposes a basic two-option `[neutral]`/`[reflective]` picker per the ticket's explicit "keep it simple to start" scope, backed by `SettingsStorage.memoryVoice`. Compiles cleanly and the prompt-branching logic was reviewed directly (a simple string-selection `if`/`else`), but **not exercised against a real model** — this environment has no `.gguf` file to run actual inference with, so the two prompts' real output quality is unverified beyond code review.
 
 ### FR-015 — Offline safety filtering, tier 1
 A deterministic Aho-Corasick lexical filter in `core/` (shared, not Android-only) screening prompts against known-hazardous markers before inference runs at all. Always-on, not user-toggleable in any build.
@@ -141,6 +142,7 @@ A single-action export of `profile.txt` + all `summaries/*.txt` as one zip, sent
 ### FR-020 — Memory on/off toggle
 A setting to disable the memory system entirely: no fact extraction, no summaries, no context injection.
 **Why:** not every target archetype wants a persistent profile built even when it never leaves the device — a privacy-maximalist professional handling privileged/confidential material may want zero aggregation of what they discuss. Should be the user's explicit choice rather than assumed. Distinct from FR-014 (tone) — this is existence, not voice.
+**Shipped:** `SettingsStorage.isMemoryEnabled` (default on) gates both `ChatViewModel.forceMemoryUpdate()` (a no-op while disabled — no fact extraction, no summaries) and `buildSystemPrompt()` (returns before ever calling `PocketChatMemory.buildContext` — no context injection). Disabling only stops *future* extraction/injection; it doesn't touch or hide already-stored `profile.txt`/summaries, which stay reachable via the memory viewer (FR-011) regardless — this is a forward-looking opt-out, not a delete (FR-033 already covers deletion). Exposed in `SettingsScreen.kt` (FR-032) with NFR-018 confirmation on the off-switching direction only — turning memory back on isn't destructive.
 
 ### FR-021 — Manual debug/crash log export
 A user-initiated (never automatic) way to export a local debug/crash log, e.g. via share sheet, for attaching to a bug report.
@@ -196,11 +198,12 @@ Re-run generation for the last assistant response with a new sampling seed, disc
 ### FR-031 — Custom system prompt / persona override
 A setting letting the user directly define/override the chat's system prompt (e.g. a specific character or role), independent of FR-009's automatic memory-context injection.
 **Why:** baseline persona continuity — the model already knowing how the user talks and what they know — is already served by FR-009 pulling from `profile.txt`/summaries, so this isn't needed just for that. This is for cases wanting an explicit persona layer on top (e.g. a roleplay character), which directly serves the "uncensored domain specialist" archetype's named want for custom personas and roleplay continuity.
-**Status:** `Idea`, ticketed ahead of implementation per explicit request — see PRO-15.
+**Shipped:** `SettingsStorage.personaOverride` (a plain string, null when unset) is edited via a free-text field in `SettingsScreen.kt`, mirroring FR-023's annotation-field pattern (blank save clears it). **Composition decision** (the ticket's own text left this "not yet designed"): the override *replaces* `BASE_SYSTEM_PROMPT` as the base text, but FR-009's memory context is still layered on top of either one — chosen because the ticket's own framing calls this "an explicit persona layer on top of" baseline continuity, not a replacement for it, so turning on a persona shouldn't silently turn off memory too. Whether it's global or could vary per FR-029-cleared session was also left open by the ticket; shipped as global (SharedPreferences, same as every other setting here) since nothing yet motivates per-session scoping.
 
 ### FR-032 — Dedicated Settings screen
 A `[settings]` menu item (alongside the existing `[models]`/`[memory]` header items) consolidating every configurable option: memory on/off (FR-020), memory voice (FR-014), custom persona (FR-031), and anything added later — instead of bolting toggles onto whichever screen happens to be nearby.
 **Why:** the number of configurable options grew during this requirements pass to the point that scattering them per-screen would actively hurt discoverability. Centralizing now avoids re-doing this later once even more settings exist.
+**Shipped:** new `SettingsScreen.kt`/`SettingsViewModel.kt`, reached via a `[settings]` header menu item next to `[models]`/`[memory]`/`[clear]`. Hosts FR-020's toggle, FR-014's voice picker, and FR-031's persona field — all three backed by the new `SettingsStorage` (plain SharedPreferences, same file `ModelStorage` already uses). No new settings exist yet beyond these three, so this is the shape the ticket asked for without speculatively adding sections nothing populates.
 
 ### FR-033 — Selective memory deletion
 Delete one specific summary or profile fact directly, without exporting/wiping everything (FR-019) or disabling memory entirely (FR-020).
@@ -274,7 +277,7 @@ Track and display, per model, a rolling average of time-to-first-token and token
 | NFR-015 | Encryption at rest for models and memory files | Idea | — | PRO-38 |
 | NFR-016 | Visual-only UI, no dedicated screen-reader support | Done (by decision) | — | — |
 | NFR-017 | English-only, no localization scaffolding | Done (by decision) | — | — |
-| NFR-018 | Destructive actions require confirmation | Idea | 2, 3 | PRO-39 |
+| NFR-018 | Destructive actions require confirmation | Done | 2, 3 | PRO-39 |
 | NFR-019 | Model downloads are sequential, one at a time | Idea | 2 | PRO-40 |
 | NFR-020 | No memory format versioning for now (decision recorded) | Done (by decision) | 3 | — |
 | NFR-021 | All user-facing errors state the specific cause | Done | 1, 2 | PRO-41 |
@@ -356,6 +359,7 @@ No i18n string externalization or multi-language memory/chat prompt design for v
 ### NFR-018 — Destructive actions require confirmation
 Deleting a model (FR-003), deleting an individual memory item (FR-033), and toggling memory off entirely (FR-020) all require an explicit confirmation dialog before executing — a single uniform interaction pattern rather than a per-feature decision.
 **Why:** standard safeguard against accidental taps on irreversible or hard-to-reverse actions; applying it uniformly avoids inconsistent behavior across similar-risk actions as more of them get added over time.
+**Shipped:** the uniform pattern is `ConfirmableMenuItem` (`ui/Terminal.kt`) — a two-tap inline confirm (`[delete]` reveals `[confirm delete]`/`[cancel]`) rather than a modal `AlertDialog`. This was FR-033's one-off addition, generalized here into the app's single shared confirmation primitive and applied to all three named actions: model deletion (`ModelManagerScreen.kt`, previously had **no confirmation at all** — a real gap this NFR closed, not just a formalization), memory-off toggling (`SettingsScreen.kt`, only the off direction), and memory-item deletion (already used it since FR-033). **Deliberately not a modal dialog:** every other screen in this app uses flat terminal-text composables with zero Material dialogs anywhere — introducing an `AlertDialog` for confirmation alone would be the only modal surface in the app, clashing with PLAN.md's explicit terminal/recovery-mode visual identity (FR-002) for no functional gain over the two-tap pattern already proven out by FR-029/FR-033.
 
 ### NFR-019 — Model downloads are sequential, one at a time
 Only one model download runs at a time; starting a new one queues behind (or requires completing/canceling) any in-progress download, rather than running several resumable downloads concurrently.

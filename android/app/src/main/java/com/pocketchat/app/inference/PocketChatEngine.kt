@@ -56,6 +56,7 @@ internal object PocketChatEngine {
         memoryDir: String,
         roles: Array<String>,
         contents: Array<String>,
+        voice: Int,
         nCtx: Int,
         nThreads: Int,
         progressCallback: MemoryProgressCallback?,

@@ -10,8 +10,9 @@ import com.pocketchat.app.chat.ChatScreen
 import com.pocketchat.app.chat.ChatViewModel
 import com.pocketchat.app.memory.MemoryViewerScreen
 import com.pocketchat.app.models.ModelManagerScreen
+import com.pocketchat.app.settings.SettingsScreen
 
-private enum class Screen { Chat, ModelManager, MemoryViewer }
+private enum class Screen { Chat, ModelManager, MemoryViewer, Settings }
 
 @Composable
 fun PocketChatApp() {
@@ -23,6 +24,7 @@ fun PocketChatApp() {
             viewModel = chatViewModel,
             onOpenModelManager = { screen = Screen.ModelManager },
             onOpenMemoryViewer = { screen = Screen.MemoryViewer },
+            onOpenSettings = { screen = Screen.Settings },
         )
 
         Screen.ModelManager -> ModelManagerScreen(
@@ -35,5 +37,7 @@ fun PocketChatApp() {
         )
 
         Screen.MemoryViewer -> MemoryViewerScreen(onBack = { screen = Screen.Chat })
+
+        Screen.Settings -> SettingsScreen(onBack = { screen = Screen.Chat })
     }
 }

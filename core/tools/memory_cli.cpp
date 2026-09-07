@@ -15,7 +15,7 @@ namespace {
 
 void print_usage(const char * argv0) {
     fprintf(stderr,
-        "usage: %s -m model.gguf -d memory_dir [-c n_ctx] [-t n_threads] [-ngl n_gpu_layers]\n"
+        "usage: %s -m model.gguf -d memory_dir [-c n_ctx] [-t n_threads] [-ngl n_gpu_layers] [--reflective]\n"
         "       %s -d memory_dir -s <query>   (FR-026 search test, no model needed)\n",
         argv0, argv0);
 }
@@ -53,6 +53,7 @@ int main(int argc, char ** argv) {
     uint32_t    n_ctx        = 0;
     int32_t     n_threads    = -1;
     int32_t     n_gpu_layers = 0;
+    pc_memory_voice voice    = PC_MEMORY_VOICE_NEUTRAL;
 
     for (int i = 1; i < argc; i++) {
         const std::string arg = argv[i];
@@ -64,12 +65,13 @@ int main(int argc, char ** argv) {
             return argv[++i];
         };
 
-        if      (arg == "-m")   model_path   = next();
-        else if (arg == "-d")   memory_dir   = next();
-        else if (arg == "-s")   search_query = next();
-        else if (arg == "-c")   n_ctx        = (uint32_t) std::stoul(next());
-        else if (arg == "-t")   n_threads    = std::stoi(next());
-        else if (arg == "-ngl") n_gpu_layers = std::stoi(next());
+        if      (arg == "-m")           model_path   = next();
+        else if (arg == "-d")           memory_dir   = next();
+        else if (arg == "-s")           search_query = next();
+        else if (arg == "-c")           n_ctx        = (uint32_t) std::stoul(next());
+        else if (arg == "-t")           n_threads    = std::stoi(next());
+        else if (arg == "-ngl")         n_gpu_layers = std::stoi(next());
+        else if (arg == "--reflective") voice        = PC_MEMORY_VOICE_REFLECTIVE; // FR-014 test
         else {
             print_usage(argv[0]);
             return 1;
@@ -189,7 +191,7 @@ int main(int argc, char ** argv) {
         printf("\nupdating memory from this session...");
         memory_progress_state progress_state;
         const int rc = pc_memory_update_session(model, memory_dir.c_str(), messages.data(), messages.size(),
-                                                 n_ctx, n_threads, print_memory_progress, &progress_state);
+                                                 voice, n_ctx, n_threads, print_memory_progress, &progress_state);
         printf("\n");
         if (rc != 0) {
             fprintf(stderr, "memory update failed: %s\n", pc_memory_last_error());

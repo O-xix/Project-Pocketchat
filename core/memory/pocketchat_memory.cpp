@@ -429,6 +429,7 @@ int pc_memory_update_session(
     const char                    * memory_dir,
     const pc_chat_message         * messages,
     size_t                          n_messages,
+    pc_memory_voice                 voice,
     uint32_t                        n_ctx,
     int32_t                         n_threads,
     pc_memory_progress_callback     progress_callback,
@@ -458,19 +459,43 @@ int pc_memory_update_session(
     // --- fact extraction: merge into profile.txt ---
     {
         std::ostringstream prompt;
-        prompt <<
-            "You are a memory-extraction assistant for a chat app. Given the "
-            "user's existing stored profile (may be empty) and a transcript of "
-            "a chat session, output an UPDATED profile: durable facts about the "
-            "user worth remembering long-term (name, preferences, ongoing "
-            "projects, recurring context) -- not one-off details from a single "
-            "question. Merge new information with the existing profile; remove "
-            "anything the new session contradicts. Output ONLY the updated "
-            "profile as plain short lines, no headers, no meta-commentary. If "
-            "nothing durable is worth remembering, output nothing.\n\n"
-            "Existing profile:\n"
-            << (existing_profile.empty() ? "(empty)" : existing_profile) << "\n\n"
-            "Session transcript:\n" << transcript;
+        // FR-014: both branches still require "plain short lines" — FR-033's
+        // per-line fact deletion depends on that structure regardless of
+        // voice, so REFLECTIVE only changes how each line is worded, not the
+        // overall document shape.
+        if (voice == PC_MEMORY_VOICE_REFLECTIVE) {
+            prompt <<
+                "You are a warm, reflective assistant helping the user build a "
+                "living picture of who they are over time. Given the user's "
+                "existing stored profile (may be empty) and a transcript of a "
+                "chat session, output an UPDATED profile: durable facts and what "
+                "matters to them worth remembering long-term (name, preferences, "
+                "ongoing projects, how they're feeling about things, recurring "
+                "context) -- not one-off details from a single question. Merge "
+                "new information with the existing profile; remove anything the "
+                "new session contradicts. Write each line as a warm, validating "
+                "reflection rather than a dry fact statement, but keep the same "
+                "one-item-per-line format. Output ONLY the updated profile as "
+                "plain short lines, no headers, no meta-commentary. If nothing "
+                "durable is worth remembering, output nothing.\n\n"
+                "Existing profile:\n"
+                << (existing_profile.empty() ? "(empty)" : existing_profile) << "\n\n"
+                "Session transcript:\n" << transcript;
+        } else {
+            prompt <<
+                "You are a memory-extraction assistant for a chat app. Given the "
+                "user's existing stored profile (may be empty) and a transcript of "
+                "a chat session, output an UPDATED profile: durable facts about the "
+                "user worth remembering long-term (name, preferences, ongoing "
+                "projects, recurring context) -- not one-off details from a single "
+                "question. Merge new information with the existing profile; remove "
+                "anything the new session contradicts. Output ONLY the updated "
+                "profile as plain short lines, no headers, no meta-commentary. If "
+                "nothing durable is worth remembering, output nothing.\n\n"
+                "Existing profile:\n"
+                << (existing_profile.empty() ? "(empty)" : existing_profile) << "\n\n"
+                "Session transcript:\n" << transcript;
+        }
 
         const std::string updated = run_prompt(
             scratch, prompt.str(), sampling, PC_MEMORY_PHASE_EXTRACTING_FACTS, progress_callback, progress_user_data);
@@ -483,12 +508,22 @@ int pc_memory_update_session(
     // --- session summary: append to summaries/ ---
     {
         std::ostringstream prompt;
-        prompt <<
-            "Summarize the following chat session in 2-4 short sentences, "
-            "focused on what was discussed or accomplished, for future "
-            "reference. Output ONLY the summary, no headers, no "
-            "meta-commentary.\n\n"
-            "Session transcript:\n" << transcript;
+        if (voice == PC_MEMORY_VOICE_REFLECTIVE) {
+            prompt <<
+                "Reflect warmly on the following chat session in 2-4 short "
+                "sentences -- what the user shared, what mattered to them, and "
+                "how the conversation went -- as if journaling about someone you "
+                "care about, for future reference. Output ONLY the reflection, "
+                "no headers, no meta-commentary.\n\n"
+                "Session transcript:\n" << transcript;
+        } else {
+            prompt <<
+                "Summarize the following chat session in 2-4 short sentences, "
+                "focused on what was discussed or accomplished, for future "
+                "reference. Output ONLY the summary, no headers, no "
+                "meta-commentary.\n\n"
+                "Session transcript:\n" << transcript;
+        }
 
         const std::string summary = run_prompt(
             scratch, prompt.str(), sampling, PC_MEMORY_PHASE_SUMMARIZING, progress_callback, progress_user_data);

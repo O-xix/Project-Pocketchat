@@ -89,6 +89,17 @@ typedef enum {
 // still completes normally), non-zero to keep going.
 typedef int (*pc_memory_progress_callback)(pc_memory_phase phase, const char * piece, void * user_data);
 
+// FR-014: which framing pc_memory_update_session's extraction/summarization
+// prompts use. NEUTRAL (default) is dry and factual; REFLECTIVE is a warmer,
+// validating framing for users who want the memory system to feel like it's
+// actually reflecting on their experience. Both still constrain profile.txt
+// to one item per line — FR-033's per-line fact deletion depends on that
+// structure regardless of voice, so only each line's *wording* changes.
+typedef enum {
+    PC_MEMORY_VOICE_NEUTRAL = 0,
+    PC_MEMORY_VOICE_REFLECTIVE = 1,
+} pc_memory_voice;
+
 // Prompts `model` (via a fresh, isolated context of its own — the caller's
 // live chat context/KV cache is never touched) to:
 //   1. extract/merge durable facts from `messages` into memory_dir/profile.txt
@@ -104,6 +115,7 @@ int pc_memory_update_session(
     const char                    * memory_dir,
     const pc_chat_message         * messages,
     size_t                          n_messages,
+    pc_memory_voice                 voice,
     uint32_t                        n_ctx,
     int32_t                         n_threads,
     pc_memory_progress_callback     progress_callback,
