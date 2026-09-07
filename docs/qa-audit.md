@@ -8,7 +8,7 @@ Tracks on-device verification of every **shipped** (`Done`) requirement in `REQU
 
 **Build under test:** record the commit hash and CI run of whatever APK you actually install, each time you install a new one — a QA pass is only meaningful pinned to a specific build.
 
-Current build under test: `017a73a` (CI run [34074403696](https://github.com/O-xix/Project-Pocketchat/actions/runs/34074403696))
+Current build under test: `ee6e96b` (CI run [34078237921](https://github.com/O-xix/Project-Pocketchat/actions/runs/34078237921)) — includes FR-044 (color palette + font size), added after Round 1 was originally drafted; a Round 31 for FR-044 is appended at the end of the checklist.
 
 ---
 
@@ -49,6 +49,7 @@ Current build under test: `017a73a` (CI run [34074403696](https://github.com/O-x
 | 28 | NFR-003 | APK size under 1.5GB | ☐ |
 | 29 | NFR-009 | Public repo + AGPLv3 license present | ☐ |
 | 30 | NFR-007, NFR-016, NFR-017, NFR-020, NFR-008 | Doc-only decisions — sanity-check, no device steps | ⏭️ |
+| 31 | FR-044 | Color palette + font size settings (added after this checklist was drafted) | ☐ |
 
 **Not in scope for this audit** (nothing shipped yet to test): FR-016, FR-017, FR-018, FR-019, FR-024, FR-025, FR-027, FR-030, NFR-015.
 
