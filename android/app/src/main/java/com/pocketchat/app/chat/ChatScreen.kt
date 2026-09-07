@@ -240,6 +240,7 @@ private fun throttleLineFor(uiState: ChatUiState): String? {
     return "pocketchat> throttled — $reason, shortening this response"
 }
 
+@Composable
 private fun statusLineFor(uiState: ChatUiState): Pair<String, Color>? {
     val status = uiState.modelStatus
     val memProgress = uiState.memoryUpdateProgress
