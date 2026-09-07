@@ -1,6 +1,12 @@
 package com.pocketchat.app.chat
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -29,6 +35,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -44,6 +51,7 @@ import com.pocketchat.app.ui.TermForeground
 import com.pocketchat.app.ui.TermUser
 import com.pocketchat.app.ui.TerminalMenuItem
 import com.pocketchat.app.ui.TerminalText
+import com.pocketchat.app.ui.TerminalTextField
 
 @Composable
 fun ChatScreen(
@@ -53,6 +61,11 @@ fun ChatScreen(
     viewModel: ChatViewModel = viewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    // FR-040: local, ephemeral UI state — null means not searching. Distinct
+    // from FR-026's archived-memory search: this filters the live, not-yet-
+    // summarized scrollback, so it has no reason to touch ChatViewModel or
+    // survive process death.
+    var searchQuery by remember { mutableStateOf<String?>(null) }
 
     Column(
         modifier = Modifier
@@ -67,15 +80,32 @@ fun ChatScreen(
             // FR-029: folds whatever's unsummarized into memory before wiping
             // the transcript — see ChatViewModel.clearChat()'s doc comment.
             ConfirmableMenuItem("[clear]", "[confirm clear]", onConfirmed = viewModel::clearChat)
+            TerminalMenuItem(
+                if (searchQuery != null) "[search: x]" else "[search]",
+                onClick = { searchQuery = if (searchQuery != null) null else "" },
+            )
+        }
+        if (searchQuery != null) {
+            TerminalTextField("search> ", searchQuery ?: "", onValueChange = { searchQuery = it })
         }
         Spacer(Modifier.height(4.dp))
-        MessageScrollback(modifier = Modifier.weight(1f), uiState = uiState)
+        MessageScrollback(modifier = Modifier.weight(1f), uiState = uiState, searchQuery = searchQuery)
         uiState.pendingSummaryReview?.let { summary ->
             SummaryReviewBanner(summary = summary, onDismiss = viewModel::dismissSummaryReview)
+        }
+        // FR-028: only while an actual chat reply is streaming, not during a
+        // memory update or clear — those don't check ChatViewModel.stopRequested,
+        // so [stop] would otherwise appear and silently do nothing during them.
+        if (uiState.isGenerating && uiState.memoryUpdateProgress == null) {
+            Row(modifier = Modifier.padding(top = 4.dp)) {
+                TerminalMenuItem("[stop]", onClick = viewModel::stopGeneration)
+            }
         }
         InputPrompt(
             enabled = uiState.modelStatus is ModelStatus.Ready && !uiState.isGenerating,
             onSubmit = viewModel::sendMessage,
+            restoreText = uiState.restoredInput,
+            onRestoreConsumed = viewModel::consumeRestoredInput,
         )
     }
 }
@@ -99,9 +129,32 @@ private fun SummaryReviewBanner(summary: String, onDismiss: () -> Unit) {
     }
 }
 
+/**
+ * [searchQuery] non-null puts this in FR-040 search mode: the list shows
+ * only matching messages (a plain case-insensitive substring match — this is
+ * the live, not-yet-summarized scrollback, small enough in practice that an
+ * FTS5 index the way FR-013/FR-026 use for the *archived* memory would be
+ * pure overhead) instead of the normal status/throttle/streaming lines,
+ * which are about what's happening *right now* and don't belong in a view
+ * of past messages.
+ */
 @Composable
-private fun MessageScrollback(modifier: Modifier, uiState: ChatUiState) {
+private fun MessageScrollback(modifier: Modifier, uiState: ChatUiState, searchQuery: String?) {
     val listState = rememberLazyListState()
+
+    if (searchQuery != null) {
+        val matches = if (searchQuery.isBlank()) emptyList()
+            else uiState.messages.filter { it.content.contains(searchQuery, ignoreCase = true) }
+        LazyColumn(modifier = modifier.fillMaxWidth(), state = listState, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            item { TerminalText("search results (${matches.size})", TermDim) }
+            if (searchQuery.isNotBlank() && matches.isEmpty()) {
+                item { TerminalText("(no matches)", TermDim) }
+            }
+            items(matches) { message -> MessageLine(message) }
+        }
+        return
+    }
+
     val statusLine = statusLineFor(uiState)
     // While a memory update runs, the streaming response is already cleared —
     // its own status line takes over instead of an empty "pocketchat> _" line.
@@ -164,15 +217,67 @@ private fun statusLineFor(uiState: ChatUiState): Pair<String, Color>? {
     }
 }
 
+/**
+ * FR-038: long-press reveals [copy]/[share] for this message only — a flat
+ * text row rather than a Material dropdown/context menu, consistent with
+ * every other action surface in this app (no popups anywhere else either).
+ */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun MessageLine(message: ChatMessage) {
+    val context = LocalContext.current
+    var showActions by remember { mutableStateOf(false) }
     val (prefix, color) = if (message.role == "user") "you> " to TermUser else "pocketchat> " to TermForeground
-    TerminalText(prefix + message.content, color)
+
+    Column(modifier = Modifier.combinedClickable(onClick = {}, onLongClick = { showActions = !showActions })) {
+        TerminalText(prefix + message.content, color)
+        if (showActions) {
+            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                TerminalMenuItem("[copy]", onClick = {
+                    copyToClipboard(context, message.content)
+                    showActions = false
+                })
+                TerminalMenuItem("[share]", onClick = {
+                    shareText(context, message.content)
+                    showActions = false
+                })
+            }
+        }
+    }
+}
+
+private fun copyToClipboard(context: Context, text: String) {
+    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    clipboard.setPrimaryClip(ClipData.newPlainText("PocketChat message", text))
+}
+
+private fun shareText(context: Context, text: String) {
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_TEXT, text)
+    }
+    context.startActivity(Intent.createChooser(intent, null))
 }
 
 @Composable
-private fun InputPrompt(enabled: Boolean, onSubmit: (String) -> Unit) {
+private fun InputPrompt(
+    enabled: Boolean,
+    onSubmit: (String) -> Unit,
+    restoreText: String?,
+    onRestoreConsumed: () -> Unit,
+) {
     var input by remember { mutableStateOf("") }
+
+    // FR-028: restoreText is a one-shot signal from ChatViewModel.stopGeneration
+    // discarding an in-flight reply — replay its text back into this field
+    // (which otherwise only tracks its own local state) and immediately tell
+    // the ViewModel it's been consumed, so it doesn't fire again on recomposition.
+    LaunchedEffect(restoreText) {
+        if (restoreText != null) {
+            input = restoreText
+            onRestoreConsumed()
+        }
+    }
 
     Row(
         modifier = Modifier

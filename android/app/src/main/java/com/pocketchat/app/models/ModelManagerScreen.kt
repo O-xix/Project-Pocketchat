@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -28,6 +29,11 @@ import com.pocketchat.app.ui.TerminalText
 @Composable
 fun ModelManagerScreen(onBack: () -> Unit, viewModel: ModelManagerViewModel = viewModel()) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+
+    // FR-043: this ViewModel instance survives navigating away and back (same
+    // ViewModelStoreOwner throughout), so without this, stats recorded by a
+    // chat session in between visits wouldn't show until process restart.
+    LaunchedEffect(Unit) { viewModel.refresh() }
 
     Column(
         modifier = Modifier
@@ -76,6 +82,9 @@ private fun ModelRowView(
             "[${row.entry.tier.label}] ${row.entry.displayName} (${row.entry.quant}, ${formatSize(row.entry.approxSizeBytes)})",
             TermForeground,
         )
+        // FR-043: only once at least one real generation has run against this
+        // model — no stats line at all beats showing a misleading "0.0s / 0 tok/s".
+        row.stats?.let { stats -> TerminalText(formatStats(stats), TermDim) }
         when (val status = row.status) {
             is ModelRowStatus.NotDownloaded -> {
                 Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -130,6 +139,9 @@ private fun ModelRowView(
         }
     }
 }
+
+private fun formatStats(stats: ResponseStatsStorage.Stats): String =
+    "first token: %.2fs • %.1f tok/s".format(stats.ttftSeconds, stats.tokensPerSecond)
 
 private fun progressLine(downloadedBytes: Long, totalBytes: Long): String =
     "${formatPercent(downloadedBytes, totalBytes)}  —  ${formatMb(downloadedBytes)} / ${formatMb(totalBytes)}"

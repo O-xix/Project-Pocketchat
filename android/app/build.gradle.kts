@@ -92,5 +92,9 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.4")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.4")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.4")
+    // FR-042: ProcessLifecycleOwner, for detecting whether the app is
+    // foregrounded so ChatViewModel knows when a foreground service is
+    // actually needed to keep a generation running.
+    implementation("androidx.lifecycle:lifecycle-process:2.8.4")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 }

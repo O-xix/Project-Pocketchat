@@ -5,6 +5,16 @@
     <!-- Lets the model manager wait for connectivity to come back instead of
          blindly polling while retrying an interrupted download -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- FR-042: the in-progress "generating…" notification and the
+         completion notification both need this on API 33+; a denied/never-
+         granted permission just means those notifications silently don't
+         show (NotificationManagerCompat handles that) — generation itself
+         and the foreground-service CPU exemption aren't gated on it. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- FR-042: keeps generation running (Doze/background-CPU exempt) if the
+         user backgrounds the app mid-response. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <application
         android:allowBackup="false"
@@ -20,6 +30,16 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- FR-042: see GenerationForegroundService's doc comment for why
+             "dataSync" — none of Android's predefined foreground-service
+             types is a precise fit for "keep an on-device compute task
+             running," and dataSync is the conventional choice apps use for
+             that shape of work. -->
+        <service
+            android:name=".chat.GenerationForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 
 </manifest>

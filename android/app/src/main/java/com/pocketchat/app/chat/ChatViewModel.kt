@@ -2,6 +2,9 @@ package com.pocketchat.app.chat
 
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.viewModelScope
 import com.pocketchat.app.inference.ChatMessage
 import com.pocketchat.app.inference.MemoryPhase
@@ -15,9 +18,11 @@ import com.pocketchat.app.models.BundledModel
 import com.pocketchat.app.models.ChatStorage
 import com.pocketchat.app.models.MemoryStorage
 import com.pocketchat.app.models.ModelStorage
+import com.pocketchat.app.models.ResponseStatsStorage
 import com.pocketchat.app.models.SettingsStorage
 import com.pocketchat.app.power.DeviceStressMonitor
 import com.pocketchat.app.power.ThrottleStatus
+import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -50,6 +55,9 @@ data class ChatUiState(
     val throttleStatus: ThrottleStatus? = null,
     /** FR-022: the just-generated session summary, awaiting the user's review; null once dismissed. */
     val pendingSummaryReview: String? = null,
+    /** FR-028: one-shot — set when [ChatViewModel.stopGeneration] discards an in-flight reply, so the
+     *  interrupted user message can be restored into the input field for editing rather than lost. */
+    val restoredInput: String? = null,
     val error: String? = null,
 )
 
@@ -67,7 +75,40 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** How many of [ChatUiState.messages] have already been folded into memory. */
     private var lastMemoryUpdateIndex: Int = 0
 
+    /**
+     * FR-028: [stopGeneration] is called from the UI (main) thread when the
+     * user taps `[stop]`; it's read from the token callback running on the
+     * background thread executing the blocking `generateChat()` call — a
+     * genuine cross-thread signal. `@Volatile` makes the write visible across
+     * that boundary without needing a full lock for a single boolean flag.
+     */
+    @Volatile
+    private var stopRequested = false
+
+    /** FR-042. Distinct from [ChatUiState.isGenerating], which [forceMemoryUpdate] and [clearChat]
+     *  also set — the foreground-service exemption is scoped to normal chat responses only. */
+    private var isGeneratingChatResponse = false
+    private var isAppInForeground = true
+
+    private val foregroundObserver = object : DefaultLifecycleObserver {
+        override fun onStart(owner: LifecycleOwner) {
+            isAppInForeground = true
+            // Back in the foreground: the user can see generation finish
+            // themselves, so the exemption (and its notification) isn't
+            // needed even if a response is still streaming.
+            GenerationForegroundService.stop(getApplication())
+        }
+
+        override fun onStop(owner: LifecycleOwner) {
+            isAppInForeground = false
+            if (isGeneratingChatResponse) {
+                GenerationForegroundService.start(getApplication())
+            }
+        }
+    }
+
     init {
+        ProcessLifecycleOwner.get().lifecycle.addObserver(foregroundObserver)
         viewModelScope.launch(Dispatchers.IO) {
             // NFR-012 (BOOM recovery): a fresh ChatViewModel instance means the
             // OS killed the previous process while backgrounded — the transcript
@@ -206,6 +247,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             )
         }
 
+        stopRequested = false
+        isGeneratingChatResponse = true // FR-042: read by the foreground-observer's onStop
         viewModelScope.launch(Dispatchers.IO) {
             persistTranscript() // NFR-012: save the user's turn before generating, in case the process dies mid-response
             try {
@@ -215,14 +258,74 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 // now keyed off this turn's message (FR-013 relevance search).
                 val history = listOf(ChatMessage("system", buildSystemPrompt(trimmed))) + _uiState.value.messages
                 val sampling = if (throttle != null) SamplingParams(nPredict = THROTTLED_N_PREDICT) else SamplingParams()
+
+                // FR-043: measured around the same callback regardless of how
+                // generation ends (completed, stopped, or erroring after some
+                // tokens) — a partial run still reflects real device throughput.
+                val startAt = System.nanoTime()
+                var firstTokenAt = -1L
+                var tokenCount = 0
                 val response = ctx.generateChat(history, sampling) { piece ->
-                    _uiState.update { it.copy(streamingResponse = it.streamingResponse + piece) }
-                    true
+                    // FR-028: returning false here stops generation — pc_generate_chat
+                    // already checks this every token (see core/inference's
+                    // run_generation loop), no separate native cancellation API
+                    // needed. What it can't interrupt is a single in-progress
+                    // llama_decode() call (e.g. a slow prompt prefill after a context
+                    // reset) -- llama.cpp's finer-grained abort_callback isn't wired
+                    // in for that; stopping still takes effect promptly once that
+                    // call returns and the next token would otherwise be checked.
+                    if (stopRequested) {
+                        false
+                    } else {
+                        if (firstTokenAt < 0) firstTokenAt = System.nanoTime()
+                        tokenCount++
+                        _uiState.update { it.copy(streamingResponse = it.streamingResponse + piece) }
+                        true
+                    }
                 }
+                recordResponseStats(startAt, firstTokenAt, tokenCount)
+
+                if (stopRequested) {
+                    // Claude Code's edit-and-resubmit pattern: the interrupted turn
+                    // is undone entirely rather than kept as a truncated reply — the
+                    // partial response is discarded, the user's own message is
+                    // dropped back out of the transcript, and its exact text is
+                    // handed back for editing. reset() clears the KV cache, which
+                    // otherwise still holds that discarded partial reply (core/memory
+                    // committed it as if it were the real answer — see
+                    // pc_generate_chat's doc comment on early-stopped generations).
+                    ctx.reset()
+                    isGeneratingChatResponse = false
+                    GenerationForegroundService.stop(getApplication()) // FR-042: no completion notification for a user-requested stop
+                    _uiState.update {
+                        it.copy(
+                            messages = it.messages.dropLast(1),
+                            isGenerating = false,
+                            streamingResponse = "",
+                            throttleStatus = null,
+                            restoredInput = trimmed,
+                        )
+                    }
+                    persistTranscript()
+                    return@launch
+                }
+
                 _uiState.update {
                     it.copy(messages = it.messages + ChatMessage("assistant", response), streamingResponse = "")
                 }
                 persistTranscript()
+
+                // FR-042: stopped here, before maybeUpdateMemory() — the ticket
+                // scopes the foreground-service exemption to the chat response
+                // itself, not the memory-update pass that follows (FR-010/FR-022
+                // already have their own in-app progress/review flow). Only post
+                // the completion notification if the user isn't already looking
+                // at the reply that just streamed in.
+                isGeneratingChatResponse = false
+                GenerationForegroundService.stop(getApplication())
+                if (!isAppInForeground) {
+                    postCompletionNotification(getApplication(), response)
+                }
 
                 // Runs inline (still under isGenerating) rather than as a detached
                 // background job: pc_memory_update_session() runs against the same
@@ -238,6 +341,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 // the next send() re-plays the full (still-intact) `messages` history
                 // into a fresh context rather than getting permanently stuck.
                 ctx.reset()
+                isGeneratingChatResponse = false
+                GenerationForegroundService.stop(getApplication()) // FR-042: no completion notification for a failed generation
                 _uiState.update {
                     it.copy(
                         isGenerating = false,
@@ -249,6 +354,40 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         }
+    }
+
+    /**
+     * FR-028: requests that the in-flight generation stop — a no-op if
+     * nothing is generating. Takes effect the next time the token callback
+     * in [sendMessage] runs; see the comment there on the one case (a single
+     * in-progress `llama_decode()` call) it can't interrupt immediately.
+     */
+    fun stopGeneration() {
+        stopRequested = true
+    }
+
+    /** FR-028: clears [ChatUiState.restoredInput] once the input field has consumed it. */
+    fun consumeRestoredInput() {
+        _uiState.update { it.copy(restoredInput = null) }
+    }
+
+    /**
+     * FR-043: rolling on-device time-to-first-token/tokens-per-second stats,
+     * shown per catalog entry in the model manager — measured from this
+     * device's actual generations, never a published benchmark number, and
+     * never transmitted anywhere (NFR-001). tokens/sec excludes the first
+     * token itself: (tokenCount - 1) tokens were generated across the span
+     * from first token to now, which is the steady-state decode rate,
+     * distinct from [firstTokenAt]'s prefill latency.
+     */
+    private fun recordResponseStats(startAt: Long, firstTokenAt: Long, tokenCount: Int) {
+        if (firstTokenAt < 0 || tokenCount <= 1) return
+        val path = loadedModelPath ?: return
+        val genSeconds = (System.nanoTime() - firstTokenAt) / 1_000_000_000f
+        if (genSeconds <= 0f) return
+        val ttftSeconds = (firstTokenAt - startAt) / 1_000_000_000f
+        val tokensPerSecond = (tokenCount - 1) / genSeconds
+        ResponseStatsStorage.record(getApplication(), File(path).name, ttftSeconds, tokensPerSecond)
     }
 
     /** NFR-012: overwrite the on-disk transcript with the current visible messages. */
@@ -361,6 +500,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     override fun onCleared() {
+        ProcessLifecycleOwner.get().lifecycle.removeObserver(foregroundObserver)
         context?.close()
         model?.close()
     }

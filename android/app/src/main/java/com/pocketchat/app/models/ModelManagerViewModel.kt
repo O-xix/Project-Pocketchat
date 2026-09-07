@@ -43,7 +43,8 @@ sealed interface ModelRowStatus {
     data class Failed(val message: String) : ModelRowStatus
 }
 
-data class ModelRow(val entry: ModelCatalogEntry, val status: ModelRowStatus)
+/** [stats] is null until at least one generation has completed against this model (FR-043). */
+data class ModelRow(val entry: ModelCatalogEntry, val status: ModelRowStatus, val stats: ResponseStatsStorage.Stats? = null)
 
 data class ModelManagerUiState(
     val totalRamBytes: Long = 0L,
@@ -87,7 +88,7 @@ class ModelManagerViewModel(app: Application) : AndroidViewModel(app) {
                     partial.exists() -> ModelRowStatus.Paused(partial.length(), entry.approxSizeBytes, "interrupted")
                     else -> ModelRowStatus.NotDownloaded
                 }
-                ModelRow(entry, status)
+                ModelRow(entry, status, ResponseStatsStorage.stats(app, entry.filename))
             }
             state.copy(
                 totalRamBytes = totalRam,
